@@ -61,6 +61,7 @@ impl FooterWidget {
             ("r", "resume-in".to_string()),
             ("tab", format!("filter: {}", filter_label)),
             ("/", "search".to_string()),
+            ("ctrl+r", "refresh".to_string()),
             ("e", "embed".to_string()),
             ("x", "export".to_string()),
             ("f", "flow".to_string()),
@@ -68,7 +69,7 @@ impl FooterWidget {
         ];
         // Collapse hints based on width
         if width < 120 {
-            hints.retain(|(k, _)| ["↑↓", "enter", "r", "tab", "/", "q"].contains(k));
+            hints.retain(|(k, _)| ["↑↓", "enter", "r", "tab", "/", "ctrl+r", "q"].contains(k));
         }
         if width < 80 {
             hints.retain(|(k, _)| ["↑↓", "enter", "q"].contains(k));

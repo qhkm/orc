@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -130,6 +130,9 @@ pub struct App {
 
     // Current working directory for local session highlighting
     pub project_cwd: Option<PathBuf>,
+
+    // Status message shown in footer after actions like refresh
+    pub status_msg: String,
 }
 
 impl App {
@@ -186,6 +189,7 @@ impl App {
             flow_runner: FlowRunnerState::new(),
             embedded: None,
             project_cwd: std::env::current_dir().ok(),
+            status_msg: String::new(),
         }
     }
 
@@ -348,6 +352,9 @@ impl App {
                                             }
                                             KeyCode::Tab => self.cycle_filter(),
                                             KeyCode::BackTab => self.cycle_filter_backward(),
+                                            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                                self.reload_sessions();
+                                            }
                                             KeyCode::Char('/') => {
                                                 self.mode = AppMode::Search;
                                                 self.search_query.clear();
@@ -549,6 +556,32 @@ impl App {
         self.list_state.select(Some(0));
     }
 
+    fn reload_sessions(&mut self) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build tokio runtime");
+        let sessions = rt.block_on(async {
+            let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+            let claude_root = home.join(".claude").join("projects");
+            let codex_root = home.join(".codex").join("sessions");
+            let index = build_index_full(&claude_root, &codex_root, None, None, None)
+                .await
+                .unwrap_or_else(|_| SessionIndex {
+                    sessions: vec![],
+                    built_at: chrono::Utc::now(),
+                });
+            if let Ok(index_path) = default_index_path() {
+                let _ = save_index(&index_path, &index);
+            }
+            index.sessions
+        });
+        let count = sessions.len();
+        self.sessions = sessions;
+        self.list_state.select(Some(0));
+        self.status_msg = format!("↺ {} sessions", count);
+    }
+
     fn render(&mut self, frame: &mut ratatui::Frame) {
         let area = frame.area();
 
@@ -577,7 +610,7 @@ impl App {
                 frame.render_stateful_widget(widget, chunks[0], &mut self.list_state);
 
                 let footer = match self.mode {
-                    AppMode::Normal => FooterWidget::new_normal(self.filter, ""),
+                    AppMode::Normal => FooterWidget::new_normal(self.filter, &self.status_msg),
                     AppMode::Search => FooterWidget::new_search(&self.search_query),
                 };
                 frame.render_widget(footer, chunks[1]);
