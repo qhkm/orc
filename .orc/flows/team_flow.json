@@ -1,0 +1,32 @@
+{
+  "name": "team_flow",
+  "source_prompt": "i want claude code to brainstorm, then\n  codex implement, then kimi cross-check, then review with opus",
+  "master_provider": "claude",
+  "stages": [
+    {
+      "id": "brainstorm_1",
+      "intent": "brainstorm",
+      "provider": "claude"
+    },
+    {
+      "id": "implement_2",
+      "intent": "implement",
+      "provider": "codex",
+      "input_from": "brainstorm_1"
+    },
+    {
+      "id": "cross_check_3",
+      "intent": "cross_check",
+      "provider": "kimi",
+      "input_from": "implement_2"
+    },
+    {
+      "id": "review_4",
+      "intent": "review",
+      "provider": "claude",
+      "profile": "opus",
+      "input_from": "cross_check_3"
+    }
+  ],
+  "created_at": "2026-02-18T16:41:44.962986Z"
+}
