@@ -1,4 +1,3 @@
-/orc
 target/
 .orc/runs/
 .orc/context.json
