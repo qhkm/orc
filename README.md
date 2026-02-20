@@ -78,6 +78,9 @@ Use both together:
 ## Build and test
 
 ```bash
-go test ./...
-go build ./cmd/orc
+cargo test
+cargo build
+cargo install --path crates/orc-bin   # installs orc to ~/.cargo/bin
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for parser status and contribution guide.
