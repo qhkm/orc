@@ -6,7 +6,7 @@
 
 **Architecture:** New `orc-repl` crate provides the REPL shell, intent classifier, router, and slash command handlers. `orc-bin` rewires its default command from TUI to REPL. Existing `orc-core` (invoke, SCP, config) and `orc-tui` (session hub) are unchanged and reused.
 
-**Tech Stack:** Rust, rustyline (REPL input), orc-core (invoke/stream, config, SCP), orc-tui (behind `/sessions`), chrono, serde_json, anyhow
+**Tech Stack:** Rust, ratatui + crossterm + tui-textarea (full-screen TUI REPL like Codex), orc-core (invoke/stream, config, SCP), orc-tui (session hub behind `/sessions`), chrono, serde_json, anyhow
 
 ---
 
@@ -29,7 +29,10 @@ edition.workspace = true
 
 [dependencies]
 orc-core = { path = "../orc-core" }
-rustyline = "15"
+orc-tui = { path = "../orc-tui" }
+ratatui = "0.29"
+crossterm = "0.28"
+tui-textarea = "0.7"
 tokio.workspace = true
 anyhow.workspace = true
 serde.workspace = true
@@ -896,14 +899,38 @@ git commit -m "feat: cost tracking — estimate per model, format, budget cap"
 
 ---
 
-## Task 8: REPL shell — core loop
+## Task 8: REPL shell — full-screen TUI (Codex-style)
 
 **Files:**
 - Modify: `crates/orc-repl/src/repl.rs`
 
-This is the largest task. The REPL shell ties together classifier, router, slash commands, invoke, capsule logging, and cost tracking.
+This is the largest task. The REPL is a full-screen ratatui TUI (like Codex CLI) with:
+- Header bar: version, providers, cwd
+- Scrollable output pane: streaming responses, routing decisions, slash command output
+- Input box at bottom: tui-textarea for user input
+- Status bar: active provider/override, session cost, hint keys
 
-**Step 1: Write the failing test**
+**Layout:**
+
+```
+┌─ orc v0.1.0 · claude + codex · ~/myproject ─────┐
+│                                                    │
+│ → implement (codex)                                │
+│                                                    │
+│ Created src/middleware/rateLimit.ts                 │
+│   - Token bucket implementation                    │
+│   - 100 req/min per IP default                     │
+│                                                    │
+│ codex · 1,240 tokens · $0.02 · 8.3s               │
+│                                                    │
+├────────────────────────────────────────────────────┤
+│ > _                                                │
+├────────────────────────────────────────────────────┤
+│ auto-route   ⇧Tab override   $0.02   /help        │
+└────────────────────────────────────────────────────┘
+```
+
+**Step 1: Write the failing tests**
 
 ```rust
 #[cfg(test)]
@@ -915,7 +942,7 @@ mod tests {
         let state = ReplState::new("/tmp/project");
         assert_eq!(state.working_dir, "/tmp/project");
         assert!(state.provider_override.is_none());
-        assert!(state.history.is_empty());
+        assert!(state.output_lines.is_empty());
         assert_eq!(state.cost_tracker.total(), 0.0);
     }
 
@@ -924,44 +951,51 @@ mod tests {
         let mut state = ReplState::new("/tmp/project");
         let providers = vec!["claude".to_string(), "codex".to_string()];
 
-        // Start: no override (auto-route)
         assert!(state.provider_override.is_none());
 
-        // First cycle: claude
         state.cycle_provider_override(&providers);
         assert_eq!(state.provider_override, Some("claude".to_string()));
 
-        // Second cycle: codex
         state.cycle_provider_override(&providers);
         assert_eq!(state.provider_override, Some("codex".to_string()));
 
-        // Third cycle: back to auto
         state.cycle_provider_override(&providers);
         assert!(state.provider_override.is_none());
     }
 
     #[test]
-    fn repl_state_prompt_display() {
+    fn repl_state_push_output() {
         let mut state = ReplState::new("/tmp/project");
-        assert_eq!(state.prompt_string(), "> ");
-
-        state.provider_override = Some("codex".to_string());
-        assert!(state.prompt_string().contains("codex"));
+        state.push_output("→ implement (codex)", OutputStyle::Routing);
+        state.push_output("Hello world", OutputStyle::Response);
+        assert_eq!(state.output_lines.len(), 2);
+        assert_eq!(state.output_lines[0].text, "→ implement (codex)");
     }
 
     #[test]
-    fn header_line_includes_providers() {
+    fn build_header_includes_providers() {
         let header = build_header("0.1.0", &["claude", "codex"], "/tmp/project");
         assert!(header.contains("claude"));
         assert!(header.contains("codex"));
         assert!(header.contains("0.1.0"));
+    }
+
+    #[test]
+    fn status_bar_shows_override() {
+        let mut state = ReplState::new("/tmp/project");
+        let bar = state.status_bar_text();
+        assert!(bar.contains("auto-route"));
+
+        state.provider_override = Some("codex".to_string());
+        let bar = state.status_bar_text();
+        assert!(bar.contains("codex"));
     }
 }
 ```
 
 **Step 2: Run to verify compile fails**
 
-Expected: `ReplState`, `build_header` not defined.
+Expected: `ReplState`, `OutputStyle`, `build_header` not defined.
 
 **Step 3: Implement**
 
@@ -973,20 +1007,52 @@ use crate::classifier;
 use crate::cost::{CostTracker, estimate_cost, format_cost};
 use crate::router::{route, route_display};
 use crate::slash::{parse_slash, SlashCommand};
-use orc_core::config::{default_config_path, load_config, save_config, default_routing, RouteEntry};
+use orc_core::config::{default_config_path, load_config, default_routing, RouteEntry};
 use orc_core::invoke::provider::{InvokeOpts, Provider};
 use orc_core::invoke::providers::claude::ClaudeProvider;
 use orc_core::invoke::providers::codex::CodexProvider;
 use orc_core::session::types::StreamEvent;
+
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::execute;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::Terminal;
+use tui_textarea::{Input, Key, TextArea};
 use std::collections::HashMap;
+use std::io::stdout;
+
+/// Style tag for output lines (determines color in the output pane).
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutputStyle {
+    Routing,     // "→ implement (codex)" — yellow
+    Response,    // streaming response text — white
+    Status,      // "⠋ Running codex..." — dim
+    Footer,      // "codex · 1,240 tokens · $0.02" — green
+    Error,       // error messages — red
+    SlashOutput, // slash command output — cyan
+}
+
+/// A single line in the scrollable output pane.
+#[derive(Debug, Clone)]
+pub struct OutputLine {
+    pub text: String,
+    pub style: OutputStyle,
+}
 
 /// Mutable state for one REPL session.
 pub struct ReplState {
     pub working_dir: String,
     pub provider_override: Option<String>,
-    pub history: Vec<(String, String)>, // (role, content) pairs
+    pub output_lines: Vec<OutputLine>,
     pub cost_tracker: CostTracker,
     pub session_id: String,
+    pub scroll_offset: u16,
+    pub is_running: bool,  // true while a provider is executing
 }
 
 impl ReplState {
@@ -995,13 +1061,30 @@ impl ReplState {
         Self {
             working_dir: working_dir.to_string(),
             provider_override: None,
-            history: Vec::new(),
+            output_lines: Vec::new(),
             cost_tracker: CostTracker::new(),
             session_id,
+            scroll_offset: 0,
+            is_running: false,
         }
     }
 
-    /// Cycle through provider overrides: None → provider1 → provider2 → ... → None
+    pub fn push_output(&mut self, text: &str, style: OutputStyle) {
+        for line in text.lines() {
+            self.output_lines.push(OutputLine {
+                text: line.to_string(),
+                style: style.clone(),
+            });
+        }
+        // Auto-scroll to bottom
+        self.scroll_to_bottom();
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        // scroll_offset will be applied during render based on area height
+        self.scroll_offset = u16::MAX;
+    }
+
     pub fn cycle_provider_override(&mut self, providers: &[String]) {
         if providers.is_empty() {
             return;
@@ -1015,7 +1098,7 @@ impl ReplState {
                     if idx + 1 < providers.len() {
                         self.provider_override = Some(providers[idx + 1].clone());
                     } else {
-                        self.provider_override = None; // cycle back to auto
+                        self.provider_override = None;
                     }
                 } else {
                     self.provider_override = None;
@@ -1024,22 +1107,21 @@ impl ReplState {
         }
     }
 
-    /// Build the prompt string shown to the user.
-    pub fn prompt_string(&self) -> String {
-        match &self.provider_override {
-            None => "> ".to_string(),
-            Some(p) => format!("({}) > ", p),
-        }
+    pub fn status_bar_text(&self) -> String {
+        let provider_part = match &self.provider_override {
+            None => "auto-route".to_string(),
+            Some(p) => format!("override: {}", p),
+        };
+        let cost_part = format_cost(self.cost_tracker.total());
+        format!("{}   ⇧Tab override   {}   /help", provider_part, cost_part)
     }
 }
 
-/// Build the header line shown when the REPL starts.
 pub fn build_header(version: &str, providers: &[&str], cwd: &str) -> String {
     let provider_list = providers.join(" + ");
     format!("orc v{} · {} · {}", version, provider_list, cwd)
 }
 
-/// Get a provider instance by name.
 fn get_provider(name: &str) -> Option<Box<dyn Provider>> {
     match name {
         "claude" => Some(Box::new(ClaudeProvider)),
@@ -1048,7 +1130,7 @@ fn get_provider(name: &str) -> Option<Box<dyn Provider>> {
     }
 }
 
-/// Run the REPL loop. This is the main entry point.
+/// Main entry point — runs the full-screen TUI REPL.
 pub fn run_repl() -> anyhow::Result<()> {
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
@@ -1059,7 +1141,6 @@ pub fn run_repl() -> anyhow::Result<()> {
     let config = if config_path.exists() {
         load_config(&config_path)?
     } else {
-        // Minimal default config
         orc_core::config::Config {
             master_provider: "claude".to_string(),
             providers: vec![],
@@ -1070,183 +1151,290 @@ pub fn run_repl() -> anyhow::Result<()> {
     };
 
     let routing = config.routing.clone().unwrap_or_else(default_routing);
-    let master = &config.master_provider;
+    let master = config.master_provider.clone();
     let available_providers: Vec<String> = vec!["claude".to_string(), "codex".to_string()];
 
     let mut state = ReplState::new(&cwd);
-
-    // Print header
     let provider_refs: Vec<&str> = available_providers.iter().map(|s| s.as_str()).collect();
-    println!("{}", build_header(env!("CARGO_PKG_VERSION"), &provider_refs, &cwd));
-    println!();
+    let header = build_header(env!("CARGO_PKG_VERSION"), &provider_refs, &cwd);
 
-    // Set up rustyline
-    let mut rl = rustyline::DefaultEditor::new()?;
+    // Set up terminal
+    enable_raw_mode()?;
+    let mut stdout = stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // Input textarea
+    let mut textarea = TextArea::default();
+    textarea.set_cursor_line_style(Style::default());
+    textarea.set_block(Block::default().borders(Borders::ALL).title(" > "));
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 
     loop {
-        let prompt = state.prompt_string();
-        let readline = rl.readline(&prompt);
+        // Render
+        terminal.draw(|frame| {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),   // header
+                    Constraint::Min(5),      // output pane
+                    Constraint::Length(3),   // input box
+                    Constraint::Length(1),   // status bar
+                ])
+                .split(frame.area());
 
-        match readline {
-            Ok(line) => {
-                let input = line.trim().to_string();
-                if input.is_empty() {
-                    continue;
-                }
-                rl.add_history_entry(&input)?;
+            // Header
+            let header_line = Line::from(Span::styled(
+                &header,
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ));
+            frame.render_widget(Paragraph::new(header_line), chunks[0]);
 
-                // Check for slash command
-                if let Some(cmd) = parse_slash(&input) {
-                    handle_slash_command(cmd, &mut state, &routing, &config, &available_providers)?;
-                    continue;
-                }
-
-                // Log user message
-                let _ = append_event(
-                    &capsule_path(std::path::Path::new(&cwd), &state.session_id),
-                    &CapsuleEvent::UserMessage {
-                        content: input.clone(),
-                        ts: chrono::Utc::now(),
-                    },
-                );
-
-                // Route the message
-                let route_entry = if let Some(override_provider) = &state.provider_override {
-                    // Direct override — skip classifier
-                    RouteEntry {
-                        provider: override_provider.clone(),
-                        model: None,
-                    }
-                } else {
-                    // Classify intent
-                    eprint!("⠋ Classifying...");
-                    let category = rt.block_on(async {
-                        let master_provider = get_provider(master).unwrap();
-                        classifier::classify(master_provider.as_ref(), &input, &cwd).await
-                    });
-                    let category = category.unwrap_or_else(|| "question".to_string());
-                    let entry = route(&category, &routing, master);
-
-                    // Log classification
-                    let _ = append_event(
-                        &capsule_path(std::path::Path::new(&cwd), &state.session_id),
-                        &CapsuleEvent::Classify {
-                            input: input.clone(),
-                            result: category.clone(),
-                            provider: entry.provider.clone(),
-                            model: entry.model.clone(),
-                            ts: chrono::Utc::now(),
-                        },
-                    );
-
-                    eprint!("\r");
-                    eprintln!("→ {} ({})", category, route_display(&entry));
-                    entry
+            // Output pane (scrollable)
+            let output_lines: Vec<Line> = state.output_lines.iter().map(|ol| {
+                let color = match ol.style {
+                    OutputStyle::Routing => Color::Yellow,
+                    OutputStyle::Response => Color::White,
+                    OutputStyle::Status => Color::DarkGray,
+                    OutputStyle::Footer => Color::Green,
+                    OutputStyle::Error => Color::Red,
+                    OutputStyle::SlashOutput => Color::Cyan,
                 };
+                Line::from(Span::styled(&ol.text, Style::default().fg(color)))
+            }).collect();
 
-                // Execute via provider
-                let provider = match get_provider(&route_entry.provider) {
-                    Some(p) => p,
-                    None => {
-                        eprintln!("Provider '{}' not available", route_entry.provider);
+            let total_lines = output_lines.len() as u16;
+            let visible_height = chunks[1].height.saturating_sub(2); // account for border
+            let max_scroll = total_lines.saturating_sub(visible_height);
+            let scroll = if state.scroll_offset == u16::MAX {
+                max_scroll
+            } else {
+                state.scroll_offset.min(max_scroll)
+            };
+
+            let output_widget = Paragraph::new(output_lines)
+                .block(Block::default().borders(Borders::ALL))
+                .wrap(Wrap { trim: false })
+                .scroll((scroll, 0));
+            frame.render_widget(output_widget, chunks[1]);
+
+            // Input textarea
+            frame.render_widget(&textarea, chunks[2]);
+
+            // Status bar
+            let status = state.status_bar_text();
+            let status_line = Line::from(Span::styled(
+                status,
+                Style::default().fg(Color::DarkGray),
+            ));
+            frame.render_widget(Paragraph::new(status_line), chunks[3]);
+        })?;
+
+        // Handle input events
+        if event::poll(std::time::Duration::from_millis(50))? {
+            let ev = event::read()?;
+
+            match &ev {
+                Event::Key(key) => {
+                    // Ctrl+D or Ctrl+C to quit
+                    if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        break;
+                    }
+                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        if state.is_running {
+                            // TODO: cancel running provider
+                            state.is_running = false;
+                            state.push_output("^C — cancelled", OutputStyle::Error);
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // Shift+Tab: cycle provider override
+                    if key.code == KeyCode::BackTab {
+                        state.cycle_provider_override(&available_providers);
                         continue;
                     }
-                };
 
-                let opts = InvokeOpts {
-                    message: input.clone(),
-                    working_dir: cwd.clone(),
-                    model: route_entry.model.clone(),
-                    timeout_secs: 120,
-                    ..Default::default()
-                };
+                    // Scroll: PageUp/PageDown
+                    if key.code == KeyCode::PageUp {
+                        state.scroll_offset = state.scroll_offset.saturating_sub(10);
+                        continue;
+                    }
+                    if key.code == KeyCode::PageDown {
+                        state.scroll_offset = state.scroll_offset.saturating_add(10);
+                        continue;
+                    }
 
-                let start = std::time::Instant::now();
-                eprintln!("⠋ Running {}...", route_entry.provider);
+                    // Enter: submit input
+                    if key.code == KeyCode::Enter {
+                        let input: String = textarea.lines().join("\n").trim().to_string();
+                        if input.is_empty() {
+                            continue;
+                        }
+                        // Clear textarea
+                        textarea = TextArea::default();
+                        textarea.set_cursor_line_style(Style::default());
+                        textarea.set_block(Block::default().borders(Borders::ALL).title(" > "));
 
-                let result = rt.block_on(async {
-                    orc_core::invoke::stream::execute(provider.as_ref(), opts).await
-                });
+                        // Show what user typed
+                        state.push_output(&format!("> {}", input), OutputStyle::Status);
 
-                let duration = start.elapsed();
+                        // Check for slash command
+                        if let Some(cmd) = parse_slash(&input) {
+                            handle_slash_command(cmd, &mut state, &routing, &available_providers);
+                            continue;
+                        }
 
-                match result {
-                    Ok(invoke_result) => {
-                        println!("{}", invoke_result.response);
-
-                        // Estimate cost (rough — we don't have exact token counts from all providers)
-                        let approx_tokens_in = input.len() as u64 / 4;
-                        let approx_tokens_out = invoke_result.response.len() as u64 / 4;
-                        let cost = estimate_cost(
-                            &route_entry.provider,
-                            route_entry.model.as_deref(),
-                            approx_tokens_in,
-                            approx_tokens_out,
-                        );
-                        state.cost_tracker.add(cost);
-
-                        // Log invoke end
+                        // Log user message
                         let _ = append_event(
                             &capsule_path(std::path::Path::new(&cwd), &state.session_id),
-                            &CapsuleEvent::InvokeEnd {
-                                provider: route_entry.provider.clone(),
-                                tokens_in: approx_tokens_in,
-                                tokens_out: approx_tokens_out,
-                                cost_usd: cost,
-                                duration_ms: duration.as_millis() as u64,
+                            &CapsuleEvent::UserMessage {
+                                content: input.clone(),
                                 ts: chrono::Utc::now(),
                             },
                         );
 
-                        // Footer
-                        eprintln!(
-                            "{} · ~{} tokens · {} · {:.1}s",
-                            route_entry.provider,
-                            approx_tokens_in + approx_tokens_out,
-                            format_cost(cost),
-                            duration.as_secs_f64(),
+                        // Route
+                        let route_entry = if let Some(ref override_provider) = state.provider_override {
+                            RouteEntry {
+                                provider: override_provider.clone(),
+                                model: None,
+                            }
+                        } else {
+                            state.push_output("classifying...", OutputStyle::Status);
+
+                            // Need to render before blocking
+                            let category = rt.block_on(async {
+                                let master_provider = get_provider(&master).unwrap();
+                                classifier::classify(master_provider.as_ref(), &input, &cwd).await
+                            });
+                            let category = category.unwrap_or_else(|| "question".to_string());
+                            let entry = route(&category, &routing, &master);
+
+                            let _ = append_event(
+                                &capsule_path(std::path::Path::new(&cwd), &state.session_id),
+                                &CapsuleEvent::Classify {
+                                    input: input.clone(),
+                                    result: category.clone(),
+                                    provider: entry.provider.clone(),
+                                    model: entry.model.clone(),
+                                    ts: chrono::Utc::now(),
+                                },
+                            );
+
+                            state.push_output(
+                                &format!("→ {} ({})", category, route_display(&entry)),
+                                OutputStyle::Routing,
+                            );
+                            entry
+                        };
+
+                        // Execute
+                        let provider = match get_provider(&route_entry.provider) {
+                            Some(p) => p,
+                            None => {
+                                state.push_output(
+                                    &format!("Provider '{}' not available", route_entry.provider),
+                                    OutputStyle::Error,
+                                );
+                                continue;
+                            }
+                        };
+
+                        let opts = InvokeOpts {
+                            message: input.clone(),
+                            working_dir: cwd.clone(),
+                            model: route_entry.model.clone(),
+                            timeout_secs: 120,
+                            ..Default::default()
+                        };
+
+                        state.is_running = true;
+                        state.push_output(
+                            &format!("running {}...", route_entry.provider),
+                            OutputStyle::Status,
                         );
 
-                        // Budget check
-                        if state.cost_tracker.over_budget() {
-                            eprintln!(
-                                "⚠ Budget reached ({}). Continue? [y/N]",
-                                format_cost(state.cost_tracker.budget().unwrap_or(0.0))
-                            );
-                            let mut confirm = String::new();
-                            std::io::stdin().read_line(&mut confirm)?;
-                            if !confirm.trim().eq_ignore_ascii_case("y") {
-                                eprintln!("Session paused. Use /budget to adjust.");
+                        let start = std::time::Instant::now();
+                        let result = rt.block_on(async {
+                            orc_core::invoke::stream::execute(provider.as_ref(), opts).await
+                        });
+                        state.is_running = false;
+                        let duration = start.elapsed();
+
+                        match result {
+                            Ok(invoke_result) => {
+                                state.push_output(&invoke_result.response, OutputStyle::Response);
+
+                                let approx_tokens_in = input.len() as u64 / 4;
+                                let approx_tokens_out = invoke_result.response.len() as u64 / 4;
+                                let cost = estimate_cost(
+                                    &route_entry.provider,
+                                    route_entry.model.as_deref(),
+                                    approx_tokens_in,
+                                    approx_tokens_out,
+                                );
+                                state.cost_tracker.add(cost);
+
+                                let _ = append_event(
+                                    &capsule_path(std::path::Path::new(&cwd), &state.session_id),
+                                    &CapsuleEvent::InvokeEnd {
+                                        provider: route_entry.provider.clone(),
+                                        tokens_in: approx_tokens_in,
+                                        tokens_out: approx_tokens_out,
+                                        cost_usd: cost,
+                                        duration_ms: duration.as_millis() as u64,
+                                        ts: chrono::Utc::now(),
+                                    },
+                                );
+
+                                state.push_output(
+                                    &format!(
+                                        "{} · ~{} tokens · {} · {:.1}s",
+                                        route_entry.provider,
+                                        approx_tokens_in + approx_tokens_out,
+                                        format_cost(cost),
+                                        duration.as_secs_f64(),
+                                    ),
+                                    OutputStyle::Footer,
+                                );
+
+                                if state.cost_tracker.over_budget() {
+                                    state.push_output(
+                                        &format!(
+                                            "⚠ Budget reached ({}). Use /budget to adjust.",
+                                            format_cost(state.cost_tracker.budget().unwrap_or(0.0))
+                                        ),
+                                        OutputStyle::Error,
+                                    );
+                                }
+
+                                state.push_output("", OutputStyle::Status); // blank separator
+                            }
+                            Err(e) => {
+                                state.push_output(&format!("Error: {}", e), OutputStyle::Error);
                             }
                         }
 
-                        // Track in history
-                        state.history.push(("user".to_string(), input));
-                        state.history.push(("assistant".to_string(), invoke_result.response));
+                        continue;
                     }
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                    }
+
+                    // All other keys: pass to textarea
+                    textarea.input(Input::from(ev.clone()));
                 }
-            }
-            Err(rustyline::error::ReadlineError::Interrupted) => {
-                eprintln!("^C");
-                continue;
-            }
-            Err(rustyline::error::ReadlineError::Eof) => {
-                break;
-            }
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                break;
+                _ => {}
             }
         }
     }
 
+    // Cleanup
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     Ok(())
 }
 
@@ -1254,31 +1442,32 @@ fn handle_slash_command(
     cmd: SlashCommand,
     state: &mut ReplState,
     routing: &HashMap<String, RouteEntry>,
-    config: &orc_core::config::Config,
     available_providers: &[String],
-) -> anyhow::Result<()> {
+) {
     match cmd {
         SlashCommand::Help => {
-            println!("Commands:");
-            println!("  /models      Show routing table");
-            println!("  /set <cat> <provider> [model]  Set routing");
-            println!("  /providers   Check installed providers");
-            println!("  /sessions    Open session hub");
-            println!("  /budget [N]  Show/set budget");
-            println!("  /help        This message");
-            println!();
-            println!("Shift+Tab cycles provider override");
+            state.push_output("Commands:", OutputStyle::SlashOutput);
+            state.push_output("  /models      Show routing table", OutputStyle::SlashOutput);
+            state.push_output("  /set <cat> <provider> [model]", OutputStyle::SlashOutput);
+            state.push_output("  /providers   Check installed providers", OutputStyle::SlashOutput);
+            state.push_output("  /sessions    Open session hub (exits REPL)", OutputStyle::SlashOutput);
+            state.push_output("  /budget [N]  Show/set budget", OutputStyle::SlashOutput);
+            state.push_output("  Shift+Tab    Cycle provider override", OutputStyle::SlashOutput);
         }
         SlashCommand::Models => {
-            println!("{:<12} {:<12} {}", "CATEGORY", "PROVIDER", "MODEL");
-            println!("{}", "-".repeat(40));
+            state.push_output(
+                &format!("{:<12} {:<12} {}", "CATEGORY", "PROVIDER", "MODEL"),
+                OutputStyle::SlashOutput,
+            );
             for (cat, entry) in routing {
                 let model = entry.model.as_deref().unwrap_or("(default)");
-                println!("{:<12} {:<12} {}", cat, entry.provider, model);
+                state.push_output(
+                    &format!("{:<12} {:<12} {}", cat, entry.provider, model),
+                    OutputStyle::SlashOutput,
+                );
             }
         }
         SlashCommand::Providers => {
-            // Delegate to existing doctor logic
             use orc_core::invoke::provider::Provider;
             let providers: Vec<Box<dyn Provider>> = vec![
                 Box::new(ClaudeProvider),
@@ -1288,40 +1477,42 @@ fn handle_slash_command(
                 let report = p.detect();
                 let status = if report.installed { "✓" } else { "✗" };
                 let auth = if report.auth_ok { "authenticated" } else { "not authenticated" };
-                println!("  {} {} ({})", status, report.name, auth);
+                state.push_output(
+                    &format!("  {} {} ({})", status, report.name, auth),
+                    OutputStyle::SlashOutput,
+                );
             }
         }
         SlashCommand::Sessions => {
-            // Launch TUI session hub
-            let mut app = orc_tui::app::App::new();
-            app.run()?;
+            state.push_output("Use `orc hub` to open session hub", OutputStyle::SlashOutput);
+            // In full-screen TUI mode, we can't nest another full-screen TUI.
+            // User should exit and run `orc hub` separately.
         }
         SlashCommand::Set { category, provider, model } => {
-            // Update routing in memory (and save to disk)
-            println!("Set {} → {} {}", category, provider, model.as_deref().unwrap_or("(default)"));
-            // Note: actual config persistence happens via save_config
-            // For MVP, just print confirmation. Full persistence added when config is mutable.
+            state.push_output(
+                &format!("Set {} → {} {}", category, provider, model.as_deref().unwrap_or("(default)")),
+                OutputStyle::SlashOutput,
+            );
         }
         SlashCommand::Budget { amount } => {
             if let Some(amt) = amount {
                 state.cost_tracker.set_budget(Some(amt));
-                println!("Budget set: {} per session", format_cost(amt));
+                state.push_output(
+                    &format!("Budget set: {} per session", format_cost(amt)),
+                    OutputStyle::SlashOutput,
+                );
             } else {
                 let budget_str = state.cost_tracker.budget()
                     .map(|b| format_cost(b))
                     .unwrap_or_else(|| "no limit".to_string());
-                println!("Session: {} spent ({})", format_cost(state.cost_tracker.total()), budget_str);
+                state.push_output(
+                    &format!("Session: {} spent ({})", format_cost(state.cost_tracker.total()), budget_str),
+                    OutputStyle::SlashOutput,
+                );
             }
         }
     }
-    Ok(())
 }
-```
-
-**Note:** The `/sessions` handler references `orc_tui::app::App`. Add `orc-tui` as a dependency in `crates/orc-repl/Cargo.toml`:
-
-```toml
-orc-tui = { path = "../orc-tui" }
 ```
 
 **Step 4: Run tests**
@@ -1333,7 +1524,7 @@ Expected: all repl tests pass.
 
 ```bash
 git add crates/orc-repl/
-git commit -m "feat: REPL shell — core loop with classify, route, invoke, cost tracking"
+git commit -m "feat: full-screen TUI REPL (Codex-style) with output pane, input box, status bar"
 ```
 
 ---

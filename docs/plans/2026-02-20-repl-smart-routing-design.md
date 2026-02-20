@@ -42,30 +42,51 @@ crates/
 
 ### Entry point
 
-`orc` (no args) drops into the REPL:
+`orc` (no args) opens a full-screen TUI (Codex CLI style):
 
 ```
-orc v0.1.0 · claude + codex · /Users/me/myproject
->
+┌─ orc v0.1.0 · claude + codex · ~/myproject ─────┐
+│                                                    │
+│ → implement (codex)                                │
+│                                                    │
+│ Created src/middleware/rateLimit.ts                 │
+│   - Token bucket implementation                    │
+│                                                    │
+│ codex · 1,240 tokens · $0.02 · 8.3s               │
+│                                                    │
+├────────────────────────────────────────────────────┤
+│ > _                                                │
+├────────────────────────────────────────────────────┤
+│ auto-route   ⇧Tab override   $0.02   /help        │
+└────────────────────────────────────────────────────┘
 ```
 
-Header shows version, available providers, current working directory.
+**Layout (top to bottom):**
+- Header bar: version, available providers, cwd
+- Output pane (scrollable): streaming responses, routing decisions, slash command results
+- Input box: tui-textarea for typing tasks / slash commands
+- Status bar: active provider/override, session cost, hint keys
+
+**Built with:** ratatui + crossterm + tui-textarea (same stack as orc-tui session hub)
 
 ### Input handling
 
-- Plain text → task intent, sent to classifier
-- `/command` → slash command, handled locally (no LLM call)
-- `Shift+Tab` → cycle active provider override
-- `Ctrl+C` → cancel current execution
+- Plain text + Enter → task intent, sent to classifier
+- `/command` + Enter → slash command, handled locally (no LLM call)
+- `Shift+Tab` → cycle active provider override (shown in status bar)
+- `PageUp/PageDown` → scroll output pane
+- `Ctrl+C` → cancel current execution (or exit if idle)
 - `Ctrl+D` → exit
 
 ### Provider override (Shift+Tab)
 
+Status bar changes:
+
 ```
-> (default: auto-route)
-> (override: claude)        ← Shift+Tab
-> (override: codex)         ← Shift+Tab again
-> (default: auto-route)     ← cycles back
+auto-route   ⇧Tab override   $0.02   /help     ← default
+codex        ⇧Tab override   $0.02   /help     ← after Shift+Tab
+claude       ⇧Tab override   $0.02   /help     ← again
+auto-route   ⇧Tab override   $0.02   /help     ← cycles back
 ```
 
 When overridden, classifier is skipped — message goes directly to that provider.
