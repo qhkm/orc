@@ -347,6 +347,7 @@ impl App {
                                                 self.move_selection(1)
                                             }
                                             KeyCode::Tab => self.cycle_filter(),
+                                            KeyCode::BackTab => self.cycle_filter_backward(),
                                             KeyCode::Char('/') => {
                                                 self.mode = AppMode::Search;
                                                 self.search_query.clear();
@@ -529,6 +530,21 @@ impl App {
             Some(SessionSource::Kimi) => Some(SessionSource::Amp),
             Some(SessionSource::Amp) => Some(SessionSource::Droid),
             Some(SessionSource::Droid) | Some(SessionSource::Scp) => None,
+        };
+        self.list_state.select(Some(0));
+    }
+
+    fn cycle_filter_backward(&mut self) {
+        self.filter = match self.filter {
+            None => Some(SessionSource::Droid),
+            Some(SessionSource::Droid) => Some(SessionSource::Amp),
+            Some(SessionSource::Amp) => Some(SessionSource::Kimi),
+            Some(SessionSource::Kimi) => Some(SessionSource::OpenCode),
+            Some(SessionSource::OpenCode) => Some(SessionSource::Copilot),
+            Some(SessionSource::Copilot) => Some(SessionSource::Gemini),
+            Some(SessionSource::Gemini) => Some(SessionSource::Codex),
+            Some(SessionSource::Codex) => Some(SessionSource::Claude),
+            Some(SessionSource::Claude) | Some(SessionSource::Scp) => None,
         };
         self.list_state.select(Some(0));
     }
