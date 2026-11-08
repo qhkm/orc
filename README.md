@@ -173,3 +173,12 @@ cargo test
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for parser status and contribution guide.
+
+## History: the Go version
+
+orc started as a Go CLI (`cmd/orc`, `internal/cli`, `internal/handoff`, …) with `orc handoff --accept` acceptance criteria and `orc chat` flows. The Rust rewrite replaced it on 2026-02-20. The Go code is unmaintained and kept for reference at the tag `go-final`:
+
+```bash
+git show go-final --stat             # what it contained
+git worktree add ../orc-go go-final  # check it out next to this repo
+```
