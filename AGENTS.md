@@ -1,47 +1,36 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
-`orc` is a Go CLI entrypoint at `cmd/orc/main.go`. Core logic lives in `internal/`:
-- `internal/cli`: command parsing and interactive chat flow.
-- `internal/providers`: provider adapters and process runners.
-- `internal/flow`, `internal/handoff`, `internal/invoke`: orchestration and handoff state.
-- `internal/config`, `internal/doctor`, `internal/tui`: config, diagnostics, and terminal UI.
+## Purpose
+`orc` routes a coding task to the best available agent CLI, verifies the result, and hands off to another agent on failure, keeping a record of each step. See `docs/plans/2026-11-08-orc-positioning.md`. It is not a terminal or workspace manager.
 
-Tests are colocated with source files as `*_test.go` (for example, `internal/cli/chat_test.go`). Runtime artifacts are written under repo-local `.orc/` (`.orc/flows`, `.orc/runs`).
+## Project Structure
+Rust workspace (the old Go version is in `../orc-go` and unmaintained):
+- `crates/orc-bin`: the `orc` binary and clap CLI (`src/main.rs`).
+- `crates/orc-core`: config (`config.rs`), flows (`flow/`), provider invocation and cross-tool resume (`invoke/`), session parsers for amp, claude, codex, copilot, droid, gemini, kimi and opencode (`session/`).
+- `crates/orc-repl`: REPL with classifier, router, cost tracking, slash commands and capsule event log.
+- `crates/orc-tui`: ratatui session hub (`orc hub`).
+
+Runtime files: `~/.orc/config.json`, `~/.orc/sessions.jsonl`, and repo-local `.orc/` (`flows/`, `runs/<id>/events.jsonl`, `context.json`).
 
 ## Build, Test, and Development Commands
-- `go test ./...`: run all unit tests across packages.
-- `go test ./internal/cli -run TestResolveChatFlowPath`: run a focused test during iteration.
-- `go build ./cmd/orc`: compile the CLI binary.
-- `go run ./cmd/orc --help`: run without a manual build.
-- `orc init` and `orc providers doctor`: verify local provider setup after changes.
+- `cargo build -j 2`: build the workspace (shared 8 GB machine; check `uptime` first).
+- `cargo test`: run all tests. `cargo test -p orc-core <name>` for a focused run.
+- `cargo run -p orc -- <subcommand>`: run without installing.
+- `cargo install --path crates/orc-bin`: install `orc`.
+- `orc init` and `orc providers doctor`: check local provider setup after changes.
 
-## Coding Style & Naming Conventions
-Use standard Go formatting and idioms:
-- Run `gofmt -w .` before opening a PR.
-- Keep package names short and lowercase (`cli`, `flow`, `tui`).
-- Use `camelCase` for unexported identifiers and `PascalCase` for exported types/functions.
-- Prefer table-driven tests for behavior matrices and edge cases.
-- Keep CLI flags and JSON fields explicit and stable (see `internal/cli` and `internal/config`).
+## Coding Style
+- Run `cargo fmt` and `cargo clippy` before committing.
+- One file per provider under `invoke/providers/` and `session/`; no provider-specific branches elsewhere.
+- Keep config fields and JSON formats stable; add new fields as `Option` so old configs still load.
 
-## Testing Guidelines
-Use Go’s `testing` package with deterministic tests:
-- Name tests `TestXxx` and colocate them with the code under test.
-- Use `t.Parallel()` for independent tests where safe.
-- Use `t.TempDir()` and explicit fixture creation for filesystem behavior.
-- Cover both success and failure paths when adding commands or provider integrations.
+## Testing
+- Unit tests in `#[cfg(test)] mod tests` at the bottom of each file.
+- Cover parsers and command builders with fixture strings for each provider; provider CLIs change their output formats often.
+- Use temp directories for filesystem tests; never touch the real `~/.orc`.
 
-## Commit & Pull Request Guidelines
-No `.git` history is available in this workspace snapshot, so follow Conventional Commit style:
-- `feat(cli): add follow-up shortcut`
-- `fix(providers): handle timeout exit code`
-- `test(flow): cover fallback flow selection`
+## Commits and PRs
+Conventional Commits, e.g. `feat(repl): add /budget`, `fix(core): handle codex resume path`. PRs include a short problem/solution summary, `cargo test` output, and notes on any `.orc/` or config format change.
 
-PRs should include:
-- A short problem/solution summary.
-- Linked issue (if available).
-- Evidence of verification (`go test ./...`, command output, or screenshots for terminal UX changes).
-- Notes on config/artifact impacts (especially `.orc/` behavior).
-
-## Security & Configuration Tips
-Do not commit secrets or machine-local config. Keep provider auth tokens in environment-specific locations and treat `~/.orc/config.json` as local user state. Commit only source and intentional fixture data.
+## Security
+Do not commit secrets or machine-local config. `~/.orc/config.json` is user state. Commit only source and intentional fixtures.

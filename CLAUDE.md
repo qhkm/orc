@@ -2,75 +2,69 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## What orc is for
+
+Read `docs/plans/2026-11-08-orc-positioning.md` before changing what the product does. In short: orc gets a coding task done correctly by routing it to the best available agent, verifying the result, and handing off to another agent on failure — with a record of every step. It is **not** a terminal/workspace manager (that is herdr's ground). Build order: **verify → hand off → route**.
+
+The older Go implementation lives in `../orc-go` and is no longer developed. This repo is Rust only.
+
 ## Build and Test
 
 ```bash
-# Build the binary
-go build ./cmd/orc
-
-# Run all tests
-go test ./...
-
-# Run tests for a specific package
-go test ./internal/flow/...
-go test ./internal/cli/...
-
-# Run a single test
-go test ./internal/flow/ -run TestCompile
-
-# Run the built binary
-./orc
+cargo build                             # whole workspace
+cargo test                              # all tests (~230, all unit tests)
+cargo test -p orc-core                  # one crate
+cargo test -p orc-repl classifier       # tests matching a name
+cargo run -p orc --                     # run the binary (REPL)
+cargo run -p orc -- list --tool claude  # run a subcommand
+cargo install --path crates/orc-bin     # install to ~/.cargo/bin
 ```
 
-## Architecture Overview
+This laptop is shared and has 8 GB RAM: check `uptime` first and pass `-j 2` to cargo builds.
 
-`orc` is a Go CLI tool (`cmd/orc/main.go`) that orchestrates multi-agent coding workflows across provider CLIs (`claude`, `codex`, `kimi`, `opencode`).
+## Workspace layout
 
-### Request Flow
-
-1. **Entry**: `cmd/orc/main.go` → `internal/cli.Run()` dispatches subcommands.
-2. **Chat mode** (`orc` or `orc chat`): Loads a flow definition from `.orc/flows/<name>.json`, then for each user turn runs the flow's stages sequentially—each stage invokes one provider CLI via `internal/invoke`.
-3. **Single invoke** (`orc invoke`): Directly runs one provider CLI via `internal/invoke` without a flow.
-4. **Handoff** (`orc handoff`/`orc continue`): Creates persistent run records (`.orc/runs/<run_id>/handoff.json` + `brief.md`) that carry context between agents.
-
-### Key Packages
-
-| Package | Role |
+| Crate | Role |
 |---|---|
-| `internal/cli` | All CLI command handlers (`run.go`, `chat.go`), init wizard, flag parsing |
-| `internal/invoke` | Builds and executes provider subprocess commands; parses JSONL responses from each provider; handles streaming |
-| `internal/flow` | `Definition` model, `Compile()` (NL prompt → staged flow), `Save`/`Load` for `.orc/flows/*.json` |
-| `internal/handoff` | `Service` creates/continues/loads run records; writes `handoff.json` + `brief.md` per run |
-| `internal/providers` | `Provider` interface, `DoctorReport`, `registry.go` for detecting installed CLIs |
-| `internal/doctor` | Runs `Doctor()` on each registered provider to check install + auth status |
-| `internal/config` | Global config file (`~/.orc/config.json`) with master provider and registered providers |
-| `internal/tui` | Terminal rendering: boxes, tables, colored badges, spinner/progress line |
+| `orc-bin` | `orc` binary. clap CLI in `src/main.rs`: no subcommand → REPL; `hub`, `list`, `resume`, `export`, `import`, `flow create`, `init`, `providers doctor` |
+| `orc-core` | Library: config, flows, provider invocation, session parsing |
+| `orc-repl` | Full-screen conversational REPL with request classification and routing |
+| `orc-tui` | ratatui session hub (`orc hub`): session list, embedded PTY view, flow runner |
 
-### Flow Compilation
+### orc-core modules
 
-`flow.Compile()` parses a natural-language prompt to identify stage intents (`brainstorm`, `implement`, `cross_check`, `review`) using keyword matching. Provider assignment uses proximity-based matching between provider name aliases and intent keywords in the prompt. Stages chain via `InputFrom` pointing to the previous stage's ID.
-
-### Provider Invocation
-
-`invoke.Execute()` / `invoke.ExecuteStream()` build the exact subprocess command for each provider (e.g. `claude --dangerously-skip-permissions --output-format stream-json -p <prompt>`), run it with a timeout, and parse the JSONL or plain-text output back to a `Response` string. Each provider has a custom JSONL decoder (`parseClaudeJSONL`, `parseCodexJSONL`, `parseOpenCodeJSONL`).
-
-### Scope Guard
-
-In chat mode, `strictScope` (default `true`) gates every user message. A fast local heuristic (`isLikelyCodingOrRepoRequest`) is tried first; if ambiguous, the master provider is invoked to classify the request as `in_scope` or `out_of_scope` via a structured JSON prompt.
-
-### Artifact Layout
-
-```
-~/.orc/config.json          # Global: master provider + registered providers
-<repo>/.orc/flows/*.json    # Flow definitions
-<repo>/.orc/runs/<id>/      # Per-run: handoff.json + brief.md
-```
-
-### Environment Variables
-
-| Variable | Effect |
+| Module | Role |
 |---|---|
-| `NO_COLOR` / `ORC_NO_COLOR=1` | Disable colored output |
-| `ORC_NO_LIVE=1` | Disable live spinner |
-| `KIMI_SHARE_DIR` | Override kimi share directory |
-| `COLUMNS` | Override terminal width for panel wrapping |
+| `config.rs` | `~/.orc/config.json`: master provider, registered providers, `routing` table (`RouteEntry { provider, model }`, `default_routing()`) |
+| `flow/` | `compile.rs` turns a natural-language prompt into staged flows (`types.rs`); flows saved to `<repo>/.orc/flows/<name>.json` |
+| `invoke/` | `provider.rs` builds provider commands, `providers/` holds per-provider command builders and stream parsers (e.g. `claude.rs` with `extract_result_meta` for cost/turns/session id), `stream.rs` streams output, `resume.rs` does native and **cross-tool resume** (`cross_tool_resume`, `build_cross_tool_command`) |
+| `session/` | Parsers for each tool's on-disk session history (`amp`, `claude`, `codex`, `copilot`, `droid`, `gemini`, `kimi`, `opencode`), `index.rs` (unified index cached at `~/.orc/sessions.jsonl`), `handoff.rs` (`generate_handoff_markdown`), `scp.rs` (portable session context JSON, default `<repo>/.orc/context.json`), `types.rs` (`SessionContext`, `SessionSource`) |
+
+### orc-repl modules
+
+| Module | Role |
+|---|---|
+| `repl.rs` | Event loop; runs the active provider in an embedded PTY. Esc toggles `orc>` command mode; Shift+Tab switches to the next provider and hands it a brief of the current screen (`extract_screen_brief`) |
+| `classifier.rs` | Builds a prompt asking the master provider to classify a request as `plan`, `implement`, `review`, `debug` or `question`; parses the JSON answer |
+| `router.rs` | `route()` maps a category to a `RouteEntry` from config; unknown categories fall back to the master provider |
+| `cost.rs` | Per-provider cost estimates and a running `CostTracker` |
+| `slash.rs` | `/help`, `/models`, `/providers`, `/sessions`, `/clear`, `/set <category> <provider> [model]`, `/budget [amount]`, `/switch <provider>` |
+| `capsule.rs` | Append-only event log per session at `<repo>/.orc/runs/<session_id>/events.jsonl` |
+
+## Files orc reads and writes
+
+```
+~/.orc/config.json                      # global config incl. routing table
+~/.orc/sessions.jsonl                   # unified session index cache
+<repo>/.orc/flows/<name>.json           # flow definitions
+<repo>/.orc/runs/<id>/events.jsonl      # REPL capsule event log
+<repo>/.orc/context.json                # exported session context (SCP)
+```
+
+`.orc/runs/`, `.orc/context.json` and `.orc/sessions.jsonl` are gitignored.
+
+## Conventions
+
+- Tests sit in `#[cfg(test)] mod tests` at the bottom of each file. Add tests for new parsers and command builders; they are the main safety net, since provider CLIs change output formats.
+- Each provider gets its own file under `invoke/providers/` and `session/`. Don't add provider-specific branches elsewhere.
+- Conventional Commits (`feat(repl): …`, `fix(core): …`).

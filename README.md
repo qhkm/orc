@@ -1,86 +1,76 @@
 # orc
 
-`orc` is a local-first coding-agent handoff orchestrator MVP.
+`orc` gets a coding task done correctly by whichever coding agents are best and available. It routes each request to the right agent CLI (`claude`, `codex`, `gemini`, `opencode`, `kimi` and others), carries context between them, and keeps a record of every step.
 
-## Commands
+Direction and roadmap: [`docs/plans/2026-11-08-orc-positioning.md`](docs/plans/2026-11-08-orc-positioning.md). The loop is **route → run → verify → hand off on failure**. Routing, cross-tool handoff and the run log exist today; verification and automatic handoff are next.
+
+## Install
 
 ```bash
-# Onboarding: detect installed coding CLIs and persist master config
-orc init
-orc init --interactive
-orc init --master codex --json
-
-# Provider capability and auth checks
-orc providers doctor
-orc providers doctor --provider codex --json
-
-# TinyClaw-style direct provider invocation
-orc invoke --provider claude --message "Create a 3-step plan for this repo" --timeout 90
-orc invoke --provider codex --continue --message "Implement step 1 and summarize changes" --json
-orc invoke --provider kimi --message "Cross-check for bugs and missing tests"
-orc invoke --provider opencode --message "Alternative review pass with opencode"
-
-# Coding-agent style interactive mode (single command, natural chat)
-orc
-orc --flow my-default --repo /path/to/repo
-orc --flow my-default --repo /path/to/repo --once "add auth middleware with tests"
-orc --flow my-default --once "..." --strict-scope=true --stream=true --live=true --show-raw=true --max-output-chars 12000
-orc chat --flow my-default --repo /path/to/repo  # explicit alias
-# If the requested flow is missing, `orc` falls back to the first `.orc/flows/*.json` file.
-# Each stage prints observable details: provider command, duration, parsed response, and optional raw CLI output.
-# Scope guard uses master agent first and blocks non-coding/non-repo prompts by default (`--strict-scope=true`).
-# Stream stage output live with `--stream=true` (default); disable with `--stream=false`.
-# Clean stream mode shows only meaningful agent text; use `--verbose=true` (or `/verbose`) to show raw stream details.
-# Use `NO_COLOR=1` or `ORC_NO_COLOR=1` for plain, non-colored terminal output.
-# Disable live spinner/status with `--live=false` or `ORC_NO_LIVE=1`.
-# After each response in interactive mode, ORC prompts next actions: review, cross-check, refine implement, or continue.
-
-# Compile a natural-language multi-agent flow
-orc flow create \
-  --name my-default \
-  "i want claude code to brainstorm, then codex implement, then kimi cross-check, then review with opus"
-
-# Create a handoff package
-orc handoff \
-  --from claude \
-  --to codex \
-  --goal "finish auth middleware and add tests" \
-  --accept "all tests pass" \
-  --accept "docs updated"
-
-# Continue from an existing run
-orc continue <run_id> --to opencode --json
-
-# Load run state
-orc status <run_id> --json
+cargo install --path crates/orc-bin   # installs orc to ~/.cargo/bin
+orc init                              # detect installed coding CLIs, write ~/.orc/config.json
+orc providers doctor                  # check each provider is installed and signed in
 ```
 
-## Config and Artifacts
+## Use
 
-- Global config: `~/.orc/config.json`
-- Flow specs: `<repo>/.orc/flows/<flow_name>.json`
-- Run files: `<repo>/.orc/runs/<run_id>/`
-  - `handoff.json` machine-readable context
-  - `brief.md` human-readable handoff prompt
+```bash
+# REPL: each request is classified (plan / implement / review / debug / question)
+# and sent to the provider configured for that category
+orc
 
-## Skills vs Orc
+# Sessions across all tools
+orc list                       # every session from every supported tool
+orc list --tool claude --format json
+orc hub                        # TUI session browser
 
-- `Skills`: reusable instruction packs for one agent session.
-- `orc`: a multi-agent control plane that routes work across CLIs (`claude`, `codex`, `kimi`, `opencode`) with explicit handoffs.
-- `Skills` optimize how a single agent behaves.
-- `orc` optimizes who does each stage, in what order, with traceable artifacts.
+# Continue a session, in the same tool or a different one
+orc resume <id>                # native resume
+orc resume <id> --in codex     # cross-tool: Codex picks up with the Claude session's context
 
-Use both together:
+# Move context as a portable file
+orc export <id>                # writes ./.orc/context.json
+orc import ./.orc/context.json --in gemini
 
-1. Use skills inside each stage (brainstorm/implement/review quality).
-2. Use `orc` to orchestrate stage sequencing, handoff, and run history.
+# Multi-stage flows from plain language
+orc flow create my-default --prompt "claude brainstorms, then codex implements, then kimi cross-checks"
+```
+
+### REPL commands
+
+| Command | Effect |
+|---|---|
+| `/set <category> <provider> [model]` | Change the routing for a category, e.g. `/set implement codex` |
+| `/switch <provider>` | Send the next requests to one provider |
+| `/budget [amount]` | Show or set the session cost budget |
+| `/models`, `/providers`, `/sessions` | Show what's available |
+| `/clear`, `/help` | |
+
+Esc toggles `orc>` command mode. Shift+Tab switches to the next provider and hands it a brief of what was on screen, so it continues where the last one stopped.
+
+## Routing
+
+Routing lives in `~/.orc/config.json` under `routing`, mapping a category to a provider and optional model. Defaults: `plan` → Claude Opus, `implement` → Codex; unknown categories go to the master provider.
+
+## Files
+
+```
+~/.orc/config.json                    # master provider, providers, routing
+~/.orc/sessions.jsonl                 # session index cache
+<repo>/.orc/flows/<name>.json         # flows
+<repo>/.orc/runs/<id>/events.jsonl    # per-session event log
+<repo>/.orc/context.json              # exported session context
+```
+
+## orc and herdr
+
+[herdr](https://herdr.dev/) is a workspace for watching and steering many running agents. orc decides which agent does the work, checks whether it is done, and keeps the work moving when an agent fails. They are meant to be used together.
 
 ## Build and test
 
 ```bash
-cargo test
 cargo build
-cargo install --path crates/orc-bin   # installs orc to ~/.cargo/bin
+cargo test
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for parser status and contribution guide.
