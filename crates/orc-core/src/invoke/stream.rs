@@ -16,6 +16,7 @@ pub struct InvokeResult {
 pub async fn execute(provider: &dyn Provider, opts: InvokeOpts) -> Result<InvokeResult> {
     let std_command = provider.build_command(&opts)?;
     let mut command = TokioCommand::from(std_command);
+    command.stdin(std::process::Stdio::null());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
 
@@ -59,6 +60,7 @@ where
 {
     let std_command = provider.build_command(&opts)?;
     let mut command = TokioCommand::from(std_command);
+    command.stdin(std::process::Stdio::null());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
 

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/orc-core", "crates/orc-tui", "crates/orc-bin"]
+members = ["crates/orc-core", "crates/orc-tui", "crates/orc-repl", "crates/orc-bin"]
 resolver = "2"
 
 [workspace.package]

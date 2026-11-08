@@ -3,7 +3,10 @@ use orc_tui::app::App;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "orc", about = "Session hub + multi-agent orchestrator")]
+#[command(
+    name = "orc",
+    about = "Conversational coding shell with smart model routing"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -11,6 +14,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Open the TUI session hub
+    Hub,
     /// List sessions
     List {
         /// Output format: "json" or "text" (default)
@@ -81,7 +86,12 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         None => {
-            // TUI mode
+            // REPL mode
+            orc_repl::repl::run_repl()?;
+        }
+
+        Some(Commands::Hub) => {
+            // TUI hub mode
             let mut app = App::new();
             app.run()?;
         }
@@ -102,7 +112,9 @@ fn main() -> anyhow::Result<()> {
             cmd_import(&file, &r#in)?;
         }
 
-        Some(Commands::Flow { cmd: FlowCommands::Create { name, prompt } }) => {
+        Some(Commands::Flow {
+            cmd: FlowCommands::Create { name, prompt },
+        }) => {
             cmd_flow_create(&name, prompt.as_deref())?;
         }
 
@@ -110,7 +122,9 @@ fn main() -> anyhow::Result<()> {
             cmd_init()?;
         }
 
-        Some(Commands::Providers { cmd: ProvidersCommands::Doctor }) => {
+        Some(Commands::Providers {
+            cmd: ProvidersCommands::Doctor,
+        }) => {
             cmd_providers_doctor()?;
         }
     }
@@ -150,7 +164,10 @@ pub fn find_session_by_prefix<'a>(
         return Some(s);
     }
     // Prefix match
-    let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(prefix)).collect();
+    let matches: Vec<_> = sessions
+        .iter()
+        .filter(|s| s.id.starts_with(prefix))
+        .collect();
     if matches.len() == 1 {
         return Some(matches[0]);
     }
@@ -258,9 +275,11 @@ fn cmd_list(format: Option<&str>, tool: Option<&str>) -> anyhow::Result<()> {
 }
 
 fn cmd_resume(id: &str, target_tool: Option<&str>) -> anyhow::Result<()> {
-    use orc_core::invoke::resume::{build_resume_command, build_cross_tool_command, spawn_and_exit};
-    use orc_core::session::scp::{write_scp, default_scp_path};
-    use orc_core::session::types::{SessionContext, ConversationMessage, Role};
+    use orc_core::invoke::resume::{
+        build_cross_tool_command, build_resume_command, spawn_and_exit,
+    };
+    use orc_core::session::scp::{default_scp_path, write_scp};
+    use orc_core::session::types::{ConversationMessage, Role, SessionContext};
 
     let index = build_full_index()?;
     let session = find_session_by_prefix(&index.sessions, id)
@@ -312,8 +331,8 @@ fn cmd_resume(id: &str, target_tool: Option<&str>) -> anyhow::Result<()> {
 }
 
 fn cmd_export(id: &str, output: Option<PathBuf>) -> anyhow::Result<()> {
-    use orc_core::session::scp::{write_scp, default_scp_path};
-    use orc_core::session::types::{SessionContext, ConversationMessage, Role};
+    use orc_core::session::scp::{default_scp_path, write_scp};
+    use orc_core::session::types::{ConversationMessage, Role, SessionContext};
 
     let index = build_full_index()?;
     let session = find_session_by_prefix(&index.sessions, id)
@@ -346,9 +365,9 @@ fn cmd_export(id: &str, output: Option<PathBuf>) -> anyhow::Result<()> {
 }
 
 fn cmd_import(file: &PathBuf, target_tool: &str) -> anyhow::Result<()> {
-    use orc_core::session::scp::read_scp;
     use orc_core::invoke::resume::{build_cross_tool_command, spawn_and_exit};
     use orc_core::session::handoff::generate_handoff_markdown;
+    use orc_core::session::scp::read_scp;
 
     let mut ctx = read_scp(file)?;
     ctx.markdown = generate_handoff_markdown(&ctx);
@@ -401,14 +420,22 @@ fn cmd_flow_create(name: &str, prompt: Option<&str>) -> anyhow::Result<()> {
     println!("Flow '{}' saved to {}", def.name, flow_path.display());
     println!("Stages:");
     for (i, stage) in def.stages.iter().enumerate() {
-        println!("  {}. {} -> {} ({})", i + 1, stage.intent, stage.provider, stage.id);
+        println!(
+            "  {}. {} -> {} ({})",
+            i + 1,
+            stage.intent,
+            stage.provider,
+            stage.id
+        );
     }
 
     Ok(())
 }
 
 fn cmd_init() -> anyhow::Result<()> {
-    use orc_core::config::{default_config_path, save_config, load_config, Config, ProviderConfig, AuthStatus};
+    use orc_core::config::{
+        default_config_path, load_config, save_config, AuthStatus, Config, ProviderConfig,
+    };
     use orc_core::invoke::provider::Provider;
     use orc_core::invoke::providers::{ClaudeProvider, CodexProvider};
 
@@ -426,10 +453,7 @@ fn cmd_init() -> anyhow::Result<()> {
     println!("Initializing orc config...");
 
     // Run doctor on known providers
-    let providers: Vec<Box<dyn Provider>> = vec![
-        Box::new(ClaudeProvider),
-        Box::new(CodexProvider),
-    ];
+    let providers: Vec<Box<dyn Provider>> = vec![Box::new(ClaudeProvider), Box::new(CodexProvider)];
 
     let mut provider_configs = Vec::new();
     let mut master_provider = String::from("claude");
@@ -444,8 +468,16 @@ fn cmd_init() -> anyhow::Result<()> {
             AuthStatus::Unknown
         };
 
-        let label = if report.installed { "installed" } else { "not found" };
-        let auth_label = if report.auth_ok { "authenticated" } else { "not authenticated" };
+        let label = if report.installed {
+            "installed"
+        } else {
+            "not found"
+        };
+        let auth_label = if report.auth_ok {
+            "authenticated"
+        } else {
+            "not authenticated"
+        };
         println!("  {} -> {} / {}", report.name, label, auth_label);
 
         if report.installed && master_provider.is_empty() {
@@ -464,6 +496,7 @@ fn cmd_init() -> anyhow::Result<()> {
     let cfg = Config {
         master_provider,
         providers: provider_configs,
+        routing: Some(orc_core::config::default_routing()),
         created_at: now,
         updated_at: now,
     };
@@ -486,15 +519,32 @@ fn cmd_providers_doctor() -> anyhow::Result<()> {
     // Also check additional providers by binary detection
     let extra_binaries = ["gemini", "copilot", "opencode", "kimi", "amp", "droid"];
 
-    println!("{:<12} {:<12} {:<30} {}", "PROVIDER", "STATUS", "BINARY PATH", "AUTH");
+    println!(
+        "{:<12} {:<12} {:<30} {}",
+        "PROVIDER", "STATUS", "BINARY PATH", "AUTH"
+    );
     println!("{}", "-".repeat(70));
 
     for (name, provider) in &providers {
         let report = provider.detect();
-        let status = if report.installed { "installed" } else { "missing" };
+        let status = if report.installed {
+            "installed"
+        } else {
+            "missing"
+        };
         let path = report.binary_path.as_deref().unwrap_or("-");
-        let auth = if report.auth_ok { "ok" } else if report.installed { "not authenticated" } else { "-" };
-        let error_note = report.error.as_deref().map(|e| format!(" ({})", e)).unwrap_or_default();
+        let auth = if report.auth_ok {
+            "ok"
+        } else if report.installed {
+            "not authenticated"
+        } else {
+            "-"
+        };
+        let error_note = report
+            .error
+            .as_deref()
+            .map(|e| format!(" ({})", e))
+            .unwrap_or_default();
         println!(
             "{:<12} {:<12} {:<30} {}{}",
             name, status, path, auth, error_note
@@ -554,7 +604,19 @@ mod tests {
     use orc_core::session::types::{SessionSource, UnifiedSession};
     use std::path::PathBuf;
 
-    fn make_session(id: &str, source: SessionSource, cwd: &str, summary: &str, updated_at: chrono::DateTime<chrono::Utc>) -> UnifiedSession {
+    #[test]
+    fn test_hub_subcommand_exists() {
+        let result = Cli::try_parse_from(["orc", "hub"]);
+        assert!(result.is_ok(), "orc hub should be a valid subcommand");
+    }
+
+    fn make_session(
+        id: &str,
+        source: SessionSource,
+        cwd: &str,
+        summary: &str,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> UnifiedSession {
         UnifiedSession {
             id: id.to_string(),
             source,
@@ -580,12 +642,14 @@ mod tests {
             .status();
 
         // If build fails (e.g. in restricted env), skip by looking for pre-built binary
-        let binary_path = PathBuf::from(cargo_manifest)
-            .join("../../target/debug/orc");
+        let binary_path = PathBuf::from(cargo_manifest).join("../../target/debug/orc");
 
         if !binary_path.exists() {
             // Binary not built yet — skip this test
-            eprintln!("Skipping test_help_exits_zero: binary not found at {:?}", binary_path);
+            eprintln!(
+                "Skipping test_help_exits_zero: binary not found at {:?}",
+                binary_path
+            );
             return;
         }
 
@@ -602,8 +666,11 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         let help_text = String::from_utf8_lossy(&output.stdout);
-        assert!(help_text.contains("orc") || help_text.contains("Session hub"),
-            "Help output should mention 'orc' or 'Session hub', got: {}", help_text);
+        assert!(
+            help_text.contains("orc") || help_text.contains("Session hub"),
+            "Help output should mention 'orc' or 'Session hub', got: {}",
+            help_text
+        );
     }
 
     // Test 2: format_session_row produces expected columns
@@ -621,14 +688,34 @@ mod tests {
         let row = format_session_row(&session);
 
         // Check source is present
-        assert!(row.contains("claude"), "Row should contain source 'claude', got: {}", row);
+        assert!(
+            row.contains("claude"),
+            "Row should contain source 'claude', got: {}",
+            row
+        );
         // Check short ID (first 8 chars)
-        assert!(row.contains("abc12345"), "Row should contain short ID 'abc12345', got: {}", row);
+        assert!(
+            row.contains("abc12345"),
+            "Row should contain short ID 'abc12345', got: {}",
+            row
+        );
         // Check last 2 cwd segments
-        assert!(row.contains("projects"), "Row should contain 'projects' cwd segment, got: {}", row);
-        assert!(row.contains("myapp"), "Row should contain 'myapp' cwd segment, got: {}", row);
+        assert!(
+            row.contains("projects"),
+            "Row should contain 'projects' cwd segment, got: {}",
+            row
+        );
+        assert!(
+            row.contains("myapp"),
+            "Row should contain 'myapp' cwd segment, got: {}",
+            row
+        );
         // Check summary
-        assert!(row.contains("Fix the auth bug"), "Row should contain summary, got: {}", row);
+        assert!(
+            row.contains("Fix the auth bug"),
+            "Row should contain summary, got: {}",
+            row
+        );
     }
 
     // Test 3: find_session_by_prefix works correctly
@@ -636,9 +723,27 @@ mod tests {
     fn test_id_prefix_match() {
         let now = chrono::Utc::now();
         let sessions = vec![
-            make_session("abc12345-0000-0000-0000-000000000001", SessionSource::Claude, "/tmp/a", "task A", now),
-            make_session("def67890-0000-0000-0000-000000000002", SessionSource::Codex, "/tmp/b", "task B", now),
-            make_session("abc99999-0000-0000-0000-000000000003", SessionSource::Gemini, "/tmp/c", "task C", now),
+            make_session(
+                "abc12345-0000-0000-0000-000000000001",
+                SessionSource::Claude,
+                "/tmp/a",
+                "task A",
+                now,
+            ),
+            make_session(
+                "def67890-0000-0000-0000-000000000002",
+                SessionSource::Codex,
+                "/tmp/b",
+                "task B",
+                now,
+            ),
+            make_session(
+                "abc99999-0000-0000-0000-000000000003",
+                SessionSource::Gemini,
+                "/tmp/c",
+                "task C",
+                now,
+            ),
         ];
 
         // Exact match
