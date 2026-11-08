@@ -2,7 +2,7 @@
 
 `orc` gets a coding task done correctly by whichever coding agents are best and available. It routes each request to the right agent CLI (`claude`, `codex`, `gemini`, `opencode`, `kimi` and others), carries context between them, and keeps a record of every step.
 
-Direction and roadmap: [`docs/plans/2026-11-08-orc-positioning.md`](docs/plans/2026-11-08-orc-positioning.md). The loop is **route → run → verify → hand off on failure**. Routing, verification (`orc run`), cross-tool handoff and the run log exist today; automatic handoff on failure is next.
+Direction and roadmap: [`docs/plans/2026-11-08-orc-positioning.md`](docs/plans/2026-11-08-orc-positioning.md). The loop is **route → run → verify → hand off on failure**. Routing, verification and automatic handoff (`orc run`), cross-tool session resume and the run log exist today; routing that learns from the run log is next.
 
 ## Install
 
@@ -34,7 +34,34 @@ The agent does the task, then orc decides whether it is done; the agent's own cl
 | `LIMIT` | Provider hit a rate limit or quota | 3 |
 | | orc itself failed (bad arguments, unknown provider) | 4 |
 
-`--json` prints the full report. Every step is logged to `.orc/runs/<run_id>/events.jsonl`. `orc run` currently supports `claude` and `codex` as agents and reviewers.
+### When an attempt does not pass
+
+orc hands the task to another attempt instead of stopping:
+
+```bash
+orc run "fix the failing auth test" --provider codex --fallback claude --max-attempts 3 --check "cargo test"
+```
+
+```
+▸ attempt 1 (codex): limit: codex: You've hit your usage limit…
+▸ handing off codex → claude
+▸ attempt 2 (claude): pass
+PASS after 2 attempts (codex → claude)
+```
+
+| Verdict | Next attempt |
+|---|---|
+| `LIMIT` | next provider that hasn't hit a limit in this run |
+| `STUCK` | another provider |
+| `FAIL` | another provider; if there is none, the same one again with the failure as feedback |
+
+The next agent gets the original task plus a handoff brief: the verdict, its evidence (failing check output, reviewer reasons, limit message), what the previous agent said it did, and what is already changed in the repo. The work is kept, not reset. The reviewer always judges the original task against the whole run's changes.
+
+- `--fallback a,b`: hand-off order after `--provider` (default: every other installed provider that can run tasks). `--no-fallback`: only retry the same provider on `FAIL`.
+- `--max-attempts N` (default 3). The exit code is the final attempt's verdict.
+- `--model` applies to the first provider only, since model names differ per CLI.
+
+`--json` prints the full report with every attempt. Every step, including each handoff, is logged to `.orc/runs/<run_id>/events.jsonl`. `orc run` currently supports `claude` and `codex` as agents and reviewers.
 
 ## Use
 

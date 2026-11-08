@@ -49,6 +49,21 @@ pub enum CapsuleEvent {
         base_commit: Option<String>,
         checks: Vec<String>,
         accept: Vec<String>,
+        /// 1-based attempt number within the run (0 in logs written before handoff existed).
+        #[serde(default)]
+        attempt: u32,
+        #[serde(default)]
+        handoff_from: Option<String>,
+        ts: DateTime<Utc>,
+    },
+    /// `orc run`: a stage did not pass and orc handed the task to another attempt.
+    Handoff {
+        from: String,
+        to: String,
+        /// The attempt number that `to` will run.
+        attempt: u32,
+        /// The verdict that triggered the handoff, e.g. "limit: codex: You've hit your usage limit".
+        reason: String,
         ts: DateTime<Utc>,
     },
     /// `orc run`: the agent process finished or was killed.

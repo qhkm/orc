@@ -16,7 +16,17 @@ const MAX_UNTRACKED_FILE_CHARS: usize = 8_000;
 #[derive(Debug, Clone)]
 pub struct StageSpec {
     pub run_id: String,
+    /// The original task. The reviewer always judges against this.
     pub task: String,
+    /// What the agent is sent, if different from `task` (e.g. task + handoff brief).
+    pub agent_prompt: Option<String>,
+    /// 1-based attempt number within the run.
+    pub attempt: u32,
+    /// Provider whose attempt this one follows, if any.
+    pub handoff_from: Option<String>,
+    /// Diff base for the review. None = HEAD when the stage starts.
+    /// A relay pins the first attempt's base so later reviews see the whole run.
+    pub base_commit: Option<String>,
     pub working_dir: PathBuf,
     pub model: Option<String>,
     /// `--check` shell commands.
@@ -44,6 +54,7 @@ pub enum Progress {
 #[derive(Debug, Clone, Serialize)]
 pub struct StageReport {
     pub run_id: String,
+    pub attempt: u32,
     pub provider: String,
     pub verdict: Verdict,
     pub exit_code: i32,
@@ -75,7 +86,7 @@ pub async fn run_stage(
     let dir = spec.working_dir.as_path();
     let log_path = capsule_path(dir, &spec.run_id);
     let provider = agent.name().to_string();
-    let base_commit = git_head(dir);
+    let base_commit = spec.base_commit.clone().or_else(|| git_head(dir));
 
     // Fail before running the agent if the record can't be written.
     append_event(
@@ -87,12 +98,14 @@ pub async fn run_stage(
             base_commit: base_commit.clone(),
             checks: spec.checks.clone(),
             accept: spec.accept.clone(),
+            attempt: spec.attempt,
+            handoff_from: spec.handoff_from.clone(),
             ts: Utc::now(),
         },
     )?;
 
     let opts = InvokeOpts {
-        message: spec.task.clone(),
+        message: spec.agent_prompt.clone().unwrap_or_else(|| spec.task.clone()),
         working_dir: dir.to_string_lossy().into_owned(),
         model: spec.model.clone(),
         timeout_secs: spec.timeout_secs,
@@ -167,6 +180,7 @@ pub async fn run_stage(
 
     Ok(StageReport {
         run_id: spec.run_id.clone(),
+        attempt: spec.attempt,
         provider,
         exit_code: verdict.exit_code(),
         verdict,
@@ -189,6 +203,24 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
 /// HEAD commit, or None outside a git repo / before the first commit.
 pub fn git_head(dir: &Path) -> Option<String> {
     git(dir, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string())
+}
+
+/// Short summary of what changed since `base` (`git diff --stat` plus new untracked files),
+/// excluding orc's own `.orc/` directory. Used in handoff briefs.
+pub fn diff_stat(dir: &Path, base: Option<&str>) -> String {
+    let Some(base) = base else {
+        return "(no git history; inspect the files directly)".to_string();
+    };
+    let mut out = git(dir, &["diff", "--stat", base, "--", ".", ":(exclude).orc"]).unwrap_or_default();
+    let untracked = git(dir, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
+    for file in untracked.lines().filter(|f| !f.is_empty() && !f.starts_with(".orc/")) {
+        out.push_str(&format!(" {file} (new, untracked)\n"));
+    }
+    if out.trim().is_empty() {
+        "(no changes yet)".to_string()
+    } else {
+        out.trim_end().to_string()
+    }
 }
 
 /// Everything that changed since `base`: committed and uncommitted changes to
@@ -241,6 +273,10 @@ mod tests {
         StageSpec {
             run_id: "run-test".into(),
             task: "fix add".into(),
+            agent_prompt: None,
+            attempt: 1,
+            handoff_from: None,
+            base_commit: None,
             working_dir: dir.to_path_buf(),
             model: None,
             checks: checks.iter().map(|s| s.to_string()).collect(),
@@ -358,6 +394,19 @@ mod tests {
         assert!(diff.contains("NEW.md (new, untracked)"));
         assert!(diff.contains("hello new file"));
         assert!(collect_diff(p, None).contains("no git history"));
+    }
+
+    #[test]
+    fn diff_stat_lists_changed_and_new_files() {
+        let dir = repo();
+        let p = dir.path();
+        let base = git_head(p).unwrap();
+        assert_eq!(diff_stat(p, Some(&base)), "(no changes yet)");
+        std::fs::write(p.join("calc.sh"), "add() { echo 0; }\n").unwrap();
+        std::fs::write(p.join("NEW.md"), "x").unwrap();
+        let stat = diff_stat(p, Some(&base));
+        assert!(stat.contains("calc.sh"), "{stat}");
+        assert!(stat.contains("NEW.md (new, untracked)"), "{stat}");
     }
 
     #[test]

@@ -128,7 +128,13 @@ where
         if let Some(event) = provider.parse_stream(&line) {
             match &event {
                 StreamEvent::Text { content } => response_parts.push(content.clone()),
-                StreamEvent::Error { message } => errors.push(message.clone()),
+                StreamEvent::Error { message } => {
+                    // Some CLIs report one failure twice (codex: `error` then `turn.failed`).
+                    if errors.last() == Some(message) {
+                        continue;
+                    }
+                    errors.push(message.clone());
+                }
                 _ => {}
             }
             let done = matches!(event, StreamEvent::Done);
@@ -198,6 +204,21 @@ mod tests {
         assert!(r.stderr.contains("oops"));
         assert_eq!(r.exit_code, 3);
         assert_eq!(r.exit_reason, ExitReason::Exited);
+    }
+
+    #[tokio::test]
+    async fn repeated_identical_error_is_reported_once() {
+        let p = ShellProvider::new("echo 'ERROR: usage limit'; echo 'ERROR: usage limit'; echo 'ERROR: other'");
+        let mut seen = 0;
+        let r = execute_stream(&p, opts(30, None), |e| {
+            if matches!(e, StreamEvent::Error { .. }) {
+                seen += 1;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(r.errors, vec!["usage limit", "other"]);
+        assert_eq!(seen, 2);
     }
 
     #[tokio::test]

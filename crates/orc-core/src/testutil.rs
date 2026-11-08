@@ -13,6 +13,7 @@ use crate::session::types::StreamEvent;
 ///
 /// The prompt is available to the script as `$ORC_MESSAGE`.
 pub struct ShellProvider {
+    name: String,
     binary: String,
     script: String,
 }
@@ -23,13 +24,18 @@ impl ShellProvider {
     }
 
     pub fn with_binary(binary: &str, script: &str) -> Self {
-        Self { binary: binary.to_string(), script: script.to_string() }
+        Self { name: "shell".to_string(), binary: binary.to_string(), script: script.to_string() }
+    }
+
+    /// A shell provider with its own name, for tests that need several providers.
+    pub fn named(name: &str, script: &str) -> Self {
+        Self { name: name.to_string(), ..Self::new(script) }
     }
 }
 
 impl Provider for ShellProvider {
     fn name(&self) -> &str {
-        "shell"
+        &self.name
     }
 
     fn binary(&self) -> &str {

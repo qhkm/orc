@@ -67,6 +67,16 @@ enum Commands {
         /// Plain-language criterion judged by a reviewer agent (repeatable)
         #[arg(long = "accept", value_name = "CRITERION")]
         accept: Vec<String>,
+        /// Providers to hand off to when an attempt does not pass, in order, e.g. --fallback codex,gemini
+        /// (default: every other installed provider that can run tasks)
+        #[arg(long, value_delimiter = ',', value_name = "PROVIDERS")]
+        fallback: Vec<String>,
+        /// Never hand off to another provider (a failing attempt is still retried by the same one)
+        #[arg(long, conflicts_with = "fallback")]
+        no_fallback: bool,
+        /// Total attempts, including the first
+        #[arg(long, default_value_t = 3)]
+        max_attempts: u32,
         /// Agent that reviews --accept criteria (default: master provider)
         #[arg(long)]
         reviewer: Option<String>,
@@ -158,6 +168,9 @@ fn main() -> anyhow::Result<()> {
             model,
             checks,
             accept,
+            fallback,
+            no_fallback,
+            max_attempts,
             reviewer,
             reviewer_model,
             timeout,
@@ -167,8 +180,8 @@ fn main() -> anyhow::Result<()> {
             json,
         }) => {
             let args = RunArgs {
-                task, provider, model, checks, accept, reviewer, reviewer_model,
-                timeout, idle, check_timeout, repo, json,
+                task, provider, model, checks, accept, fallback, no_fallback, max_attempts,
+                reviewer, reviewer_model, timeout, idle, check_timeout, repo, json,
             };
             match cmd_run(args) {
                 Ok(code) => std::process::exit(code),
@@ -457,6 +470,9 @@ struct RunArgs {
     model: Option<String>,
     checks: Vec<String>,
     accept: Vec<String>,
+    fallback: Vec<String>,
+    no_fallback: bool,
+    max_attempts: u32,
     reviewer: Option<String>,
     reviewer_model: Option<String>,
     timeout: u64,
@@ -485,8 +501,10 @@ fn lookup_provider(name: &str) -> anyhow::Result<Box<dyn orc_core::invoke::provi
 
 /// `orc run`: returns the process exit code (the verdict's).
 fn cmd_run(args: RunArgs) -> anyhow::Result<i32> {
+    use orc_core::invoke::provider::Provider;
+    use orc_core::relay::{run_relay, verdict_summary, RelayProgress};
     use orc_core::session::types::StreamEvent;
-    use orc_core::verify::{run_stage, Progress, StageSpec, Verdict};
+    use orc_core::verify::{Progress, StageSpec, Verdict};
 
     if args.task.trim().is_empty() {
         anyhow::bail!("task cannot be empty");
@@ -496,12 +514,32 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<i32> {
         None => std::env::current_dir()?,
     };
     let master = master_provider();
-    let agent = lookup_provider(args.provider.as_deref().unwrap_or(&master))?;
+    let primary = args.provider.clone().unwrap_or_else(|| master.clone());
+
+    // Providers in hand-off order: the primary first, then the fallbacks.
+    let mut names = vec![primary.clone()];
+    if !args.no_fallback {
+        if args.fallback.is_empty() {
+            for name in orc_core::invoke::providers::all_providers() {
+                let installed = lookup_provider(name).map(|p| p.detect().installed).unwrap_or(false);
+                if installed {
+                    names.push(name.to_string());
+                }
+            }
+        } else {
+            names.extend(args.fallback.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    names.retain(|n| seen.insert(n.clone()));
+    let agents = names.iter().map(|n| lookup_provider(n)).collect::<anyhow::Result<Vec<_>>>()?;
+    let agent_refs: Vec<&dyn Provider> = agents.iter().map(|a| a.as_ref()).collect();
+
     let reviewer = if args.accept.is_empty() {
         None
     } else {
         let name = args.reviewer.clone().unwrap_or_else(|| master.clone());
-        if name == agent.name() && !args.json {
+        if name == primary && !args.json {
             eprintln!("note: reviewer is the same provider as the agent ({name}); use --reviewer for an independent check");
         }
         Some(lookup_provider(&name)?)
@@ -512,6 +550,10 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<i32> {
     let spec = StageSpec {
         run_id,
         task: args.task,
+        agent_prompt: None,
+        attempt: 1,
+        handoff_from: None,
+        base_commit: None,
         working_dir,
         model: args.model,
         checks: args.checks,
@@ -524,52 +566,74 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<i32> {
 
     let json = args.json;
     if !json {
-        eprintln!("▸ {} working on: {}", agent.name(), spec.task);
+        eprintln!("▸ task: {}", spec.task);
+        if names.len() > 1 {
+            eprintln!("  hand-off order: {} (max {} attempts)", names.join(" → "), args.max_attempts);
+        }
     }
-    let progress = move |p: Progress| {
+    let progress = move |p: RelayProgress| {
         if json {
             return;
         }
         match p {
-            Progress::Agent(StreamEvent::Text { content }) => eprintln!("  {}", content.trim_end()),
-            Progress::Agent(StreamEvent::ToolStart { name, .. }) => eprintln!("  · {name}"),
-            Progress::Agent(StreamEvent::Error { message }) => eprintln!("  ! {message}"),
-            Progress::Agent(_) => {}
-            Progress::AgentFinished { exit_code, exit_reason, duration_ms } => {
+            RelayProgress::AttemptStarted { attempt, max_attempts, provider } => {
+                eprintln!("\n▸ attempt {attempt}/{max_attempts}: {provider}")
+            }
+            RelayProgress::Stage(Progress::Agent(StreamEvent::Text { content })) => eprintln!("  {}", content.trim_end()),
+            RelayProgress::Stage(Progress::Agent(StreamEvent::ToolStart { name, .. })) => eprintln!("  · {name}"),
+            RelayProgress::Stage(Progress::Agent(StreamEvent::Error { message })) => eprintln!("  ! {message}"),
+            RelayProgress::Stage(Progress::Agent(_)) => {}
+            RelayProgress::Stage(Progress::AgentFinished { exit_code, exit_reason, duration_ms }) => {
                 eprintln!("▸ agent finished: exit {exit_code} ({exit_reason:?}) in {}s", duration_ms / 1000)
             }
-            Progress::CheckStarted(cmd) => eprintln!("▸ check: {cmd}"),
-            Progress::CheckFinished(r) => {
+            RelayProgress::Stage(Progress::CheckStarted(cmd)) => eprintln!("▸ check: {cmd}"),
+            RelayProgress::Stage(Progress::CheckFinished(r)) => {
                 eprintln!("  {} {} ({}s)", if r.passed { "✓" } else { "✗" }, r.command, r.duration_ms / 1000)
             }
-            Progress::ReviewStarted(name) => eprintln!("▸ review by {name}"),
-            Progress::Skipped(why) => eprintln!("▸ {why}"),
+            RelayProgress::Stage(Progress::ReviewStarted(name)) => eprintln!("▸ review by {name}"),
+            RelayProgress::Stage(Progress::Skipped(why)) => eprintln!("▸ {why}"),
+            RelayProgress::AttemptFinished { attempt, provider, verdict } => {
+                eprintln!("▸ attempt {attempt} ({provider}): {}", verdict_summary(&verdict))
+            }
+            RelayProgress::Handoff { from, to, .. } => eprintln!("▸ handing off {from} → {to}"),
+            RelayProgress::Stopped(why) => eprintln!("▸ stopping: {why}"),
         }
     };
 
     let rt = tokio::runtime::Runtime::new()?;
-    let report = rt.block_on(run_stage(&spec, agent.as_ref(), reviewer.as_deref(), progress))?;
+    let report = rt.block_on(run_relay(&spec, args.max_attempts, &agent_refs, reviewer.as_deref(), progress))?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(report.exit_code);
     }
 
-    if let Some(review) = &report.review {
+    let last = report.attempts.last().expect("at least one attempt");
+    if let Some(review) = &last.review {
         for r in &review.results {
             eprintln!("  {} {} — {}", if r.pass { "✓" } else { "✗" }, r.criterion, r.reason);
         }
     }
+    eprintln!();
+    let by = if report.attempts.len() > 1 {
+        let who: Vec<&str> = report.attempts.iter().map(|a| a.provider.as_str()).collect();
+        format!(" after {} attempts ({})", report.attempts.len(), who.join(" → "))
+    } else {
+        String::new()
+    };
     match &report.verdict {
-        Verdict::Pass => println!("PASS"),
+        Verdict::Pass => println!("PASS{by}"),
         Verdict::Fail { reason, evidence } => {
-            println!("FAIL: {reason}");
+            println!("FAIL{by}: {reason}");
             if !evidence.is_empty() {
                 println!("{evidence}");
             }
         }
-        Verdict::Stuck { reason, after_secs } => println!("STUCK: {reason} (after {after_secs}s)"),
-        Verdict::Limit { provider, message } => println!("LIMIT: {provider}: {message}"),
+        Verdict::Stuck { reason, after_secs } => println!("STUCK{by}: {reason} (after {after_secs}s)"),
+        Verdict::Limit { provider, message } => println!("LIMIT{by}: {provider}: {message}"),
+    }
+    if let Some(why) = &report.stop_reason {
+        println!("stopped: {why}");
     }
     println!("run {} · log {}", report.run_id, report.log_path.display());
     Ok(report.exit_code)
