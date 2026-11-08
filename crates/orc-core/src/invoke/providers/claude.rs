@@ -49,7 +49,14 @@ impl Provider for ClaudeProvider {
     fn build_command(&self, opts: &InvokeOpts) -> anyhow::Result<Command> {
         let mut cmd = Command::new("claude");
         cmd.arg("--output-format").arg("stream-json");
-        cmd.arg("--dangerously-skip-permissions");
+        // Required with -p since Claude Code 2.1: "--output-format=stream-json requires --verbose"
+        cmd.arg("--verbose");
+        if opts.read_only {
+            // In -p mode, tools that are not allowed are denied, not prompted.
+            cmd.arg("--allowedTools").arg("Read,Grep,Glob");
+        } else {
+            cmd.arg("--dangerously-skip-permissions");
+        }
         cmd.arg("--max-turns").arg("25");
         if let Some(model) = &opts.model {
             cmd.arg("--model").arg(model);
@@ -126,13 +133,18 @@ impl Provider for ClaudeProvider {
                 None
             }
             // Final result — extract the result text as Text, then Done
+            // The caller extracts the clean result text from raw_output (see extract_result_meta).
+            // A failed run (usage limit, max turns, API error) is reported as an Error instead;
+            // the process exits right after, which ends the stream.
             "result" => {
-                // The result event's "result" field contains the final clean response
-                if let Some(result_text) = val.get("result").and_then(|r| r.as_str()) {
-                    if !result_text.is_empty() {
-                        // We can only return one event, so return Done.
-                        // The caller should extract the result text from raw_output.
-                    }
+                if val.get("is_error").and_then(|e| e.as_bool()) == Some(true) {
+                    let message = val
+                        .get("result")
+                        .and_then(|r| r.as_str())
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| val.get("subtype").and_then(|s| s.as_str()))
+                        .unwrap_or("claude reported an error");
+                    return Some(StreamEvent::Error { message: message.to_string() });
                 }
                 Some(StreamEvent::Done)
             }
@@ -182,6 +194,34 @@ mod tests {
         let line = r#"{"type":"result","subtype":"success"}"#;
         let event = provider.parse_stream(line);
         assert!(matches!(event, Some(StreamEvent::Done)));
+    }
+
+    #[test]
+    fn parse_error_result_event() {
+        let provider = ClaudeProvider;
+        let line = r#"{"type":"result","subtype":"success","is_error":true,"result":"Claude AI usage limit reached|1762700000"}"#;
+        let event = provider.parse_stream(line);
+        assert!(matches!(event, Some(StreamEvent::Error { message }) if message.contains("usage limit")));
+
+        let line = r#"{"type":"result","subtype":"error_max_turns","is_error":true}"#;
+        let event = provider.parse_stream(line);
+        assert!(matches!(event, Some(StreamEvent::Error { message }) if message == "error_max_turns"));
+    }
+
+    #[test]
+    fn build_command_read_only_drops_skip_permissions() {
+        let opts = InvokeOpts { read_only: true, ..Default::default() };
+        let cmd = ClaudeProvider.build_command(&opts).unwrap();
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert!(!args.contains(&"--dangerously-skip-permissions"));
+        assert!(args.windows(2).any(|w| w == ["--allowedTools", "Read,Grep,Glob"]));
+    }
+
+    #[test]
+    fn build_command_passes_verbose_for_stream_json() {
+        let cmd = ClaudeProvider.build_command(&InvokeOpts::default()).unwrap();
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert!(args.contains(&"--verbose"));
     }
 
     #[test]

@@ -26,8 +26,8 @@ This laptop is shared and has 8 GB RAM: check `uptime` first and pass `-j 2` to 
 
 | Crate | Role |
 |---|---|
-| `orc-bin` | `orc` binary. clap CLI in `src/main.rs`: no subcommand → REPL; `hub`, `list`, `resume`, `export`, `import`, `flow create`, `init`, `providers doctor` |
-| `orc-core` | Library: config, flows, provider invocation, session parsing |
+| `orc-bin` | `orc` binary. clap CLI in `src/main.rs`: no subcommand → REPL; `run` (verified task), `hub`, `list`, `resume`, `export`, `import`, `flow create`, `init`, `providers doctor` |
+| `orc-core` | Library: config, flows, provider invocation, session parsing, verification, run log |
 | `orc-repl` | Full-screen conversational REPL with request classification and routing |
 | `orc-tui` | ratatui session hub (`orc hub`): session list, embedded PTY view, flow runner |
 
@@ -37,7 +37,9 @@ This laptop is shared and has 8 GB RAM: check `uptime` first and pass `-j 2` to 
 |---|---|
 | `config.rs` | `~/.orc/config.json`: master provider, registered providers, `routing` table (`RouteEntry { provider, model }`, `default_routing()`) |
 | `flow/` | `compile.rs` turns a natural-language prompt into staged flows (`types.rs`); flows saved to `<repo>/.orc/flows/<name>.json` |
-| `invoke/` | `provider.rs` builds provider commands, `providers/` holds per-provider command builders and stream parsers (e.g. `claude.rs` with `extract_result_meta` for cost/turns/session id), `stream.rs` streams output, `resume.rs` does native and **cross-tool resume** (`cross_tool_resume`, `build_cross_tool_command`) |
+| `capsule.rs` | Append-only run log at `<repo>/.orc/runs/<id>/events.jsonl`, used by the REPL and `orc run` (`stage_started`, `agent_finished`, `check_result`, `review_result`, `verdict`). Re-exported as `orc_repl::capsule` |
+| `verify/` | Step 1 of the loop. `stage.rs` (`run_stage`: agent → checks → review → verdict, plus git base/diff), `verdict.rs` (`Verdict` pass/fail/stuck/limit, `decide` order, exit codes), `check.rs` (`--check` shell commands), `review.rs` (read-only reviewer prompt + JSON parsing), `limit.rs` (rate-limit patterns, scanned only in stderr and error events) |
+| `invoke/` | `provider.rs` builds provider commands (`InvokeOpts` has `timeout_secs`, `idle_timeout_secs`, `read_only`), `providers/` holds per-provider command builders and stream parsers — only `claude` (`claude -p --output-format stream-json --verbose`) and `codex` (`codex exec --json`) can run headless; `stream.rs` runs a provider with total/idle timeouts, stderr capture and process-group kill (`ExitReason`), `resume.rs` does native and **cross-tool resume** (`cross_tool_resume`, `build_cross_tool_command`) |
 | `session/` | Parsers for each tool's on-disk session history (`amp`, `claude`, `codex`, `copilot`, `droid`, `gemini`, `kimi`, `opencode`), `index.rs` (unified index cached at `~/.orc/sessions.jsonl`), `handoff.rs` (`generate_handoff_markdown`), `scp.rs` (portable session context JSON, default `<repo>/.orc/context.json`), `types.rs` (`SessionContext`, `SessionSource`) |
 
 ### orc-repl modules
@@ -49,7 +51,6 @@ This laptop is shared and has 8 GB RAM: check `uptime` first and pass `-j 2` to 
 | `router.rs` | `route()` maps a category to a `RouteEntry` from config; unknown categories fall back to the master provider |
 | `cost.rs` | Per-provider cost estimates and a running `CostTracker` |
 | `slash.rs` | `/help`, `/models`, `/providers`, `/sessions`, `/clear`, `/set <category> <provider> [model]`, `/budget [amount]`, `/switch <provider>` |
-| `capsule.rs` | Append-only event log per session at `<repo>/.orc/runs/<session_id>/events.jsonl` |
 
 ## Files orc reads and writes
 
@@ -57,7 +58,7 @@ This laptop is shared and has 8 GB RAM: check `uptime` first and pass `-j 2` to 
 ~/.orc/config.json                      # global config incl. routing table
 ~/.orc/sessions.jsonl                   # unified session index cache
 <repo>/.orc/flows/<name>.json           # flow definitions
-<repo>/.orc/runs/<id>/events.jsonl      # REPL capsule event log
+<repo>/.orc/runs/<id>/events.jsonl      # run log (REPL sessions and orc run)
 <repo>/.orc/context.json                # exported session context (SCP)
 ```
 

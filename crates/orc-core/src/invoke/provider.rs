@@ -9,7 +9,12 @@ pub struct InvokeOpts {
     pub working_dir: String,
     pub model: Option<String>,
     pub continue_session: bool,
+    /// Kill the process after this many seconds in total. 0 = no limit.
     pub timeout_secs: u64,
+    /// Kill the process if it produces no stdout for this many seconds.
+    pub idle_timeout_secs: Option<u64>,
+    /// The agent may read the repo but not change it (used for reviewers).
+    pub read_only: bool,
 }
 
 impl Default for InvokeOpts {
@@ -20,6 +25,8 @@ impl Default for InvokeOpts {
             model: None,
             continue_session: false,
             timeout_secs: 120,
+            idle_timeout_secs: None,
+            read_only: false,
         }
     }
 }

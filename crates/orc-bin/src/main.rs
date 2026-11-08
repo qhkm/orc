@@ -49,6 +49,46 @@ enum Commands {
         #[arg(long)]
         r#in: String,
     },
+    /// Run one task with an agent, then verify the result.
+    ///
+    /// Exit codes: 0 pass, 1 fail, 2 stuck, 3 rate-limited, 4 orc error.
+    Run {
+        /// The task for the agent
+        task: String,
+        /// Agent that does the work (default: master provider)
+        #[arg(long, short)]
+        provider: Option<String>,
+        /// Model for the agent
+        #[arg(long, short)]
+        model: Option<String>,
+        /// Shell command that must exit 0 afterwards (repeatable), e.g. --check "cargo test"
+        #[arg(long = "check", value_name = "CMD")]
+        checks: Vec<String>,
+        /// Plain-language criterion judged by a reviewer agent (repeatable)
+        #[arg(long = "accept", value_name = "CRITERION")]
+        accept: Vec<String>,
+        /// Agent that reviews --accept criteria (default: master provider)
+        #[arg(long)]
+        reviewer: Option<String>,
+        /// Model for the reviewer
+        #[arg(long)]
+        reviewer_model: Option<String>,
+        /// Kill the agent after this many seconds
+        #[arg(long, default_value_t = 1800)]
+        timeout: u64,
+        /// Kill the agent after this many seconds without output
+        #[arg(long, default_value_t = 300)]
+        idle: u64,
+        /// Timeout for each --check command, in seconds
+        #[arg(long, default_value_t = 600)]
+        check_timeout: u64,
+        /// Repository to work in (default: current directory)
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Print the report as JSON instead of live output
+        #[arg(long)]
+        json: bool,
+    },
     /// Flow management
     Flow {
         #[command(subcommand)]
@@ -110,6 +150,33 @@ fn main() -> anyhow::Result<()> {
 
         Some(Commands::Import { file, r#in }) => {
             cmd_import(&file, &r#in)?;
+        }
+
+        Some(Commands::Run {
+            task,
+            provider,
+            model,
+            checks,
+            accept,
+            reviewer,
+            reviewer_model,
+            timeout,
+            idle,
+            check_timeout,
+            repo,
+            json,
+        }) => {
+            let args = RunArgs {
+                task, provider, model, checks, accept, reviewer, reviewer_model,
+                timeout, idle, check_timeout, repo, json,
+            };
+            match cmd_run(args) {
+                Ok(code) => std::process::exit(code),
+                Err(e) => {
+                    eprintln!("orc run: {e:#}");
+                    std::process::exit(4);
+                }
+            }
         }
 
         Some(Commands::Flow {
@@ -382,6 +449,130 @@ fn cmd_import(file: &PathBuf, target_tool: &str) -> anyhow::Result<()> {
     spawn_and_exit(cmd)?;
 
     Ok(())
+}
+
+struct RunArgs {
+    task: String,
+    provider: Option<String>,
+    model: Option<String>,
+    checks: Vec<String>,
+    accept: Vec<String>,
+    reviewer: Option<String>,
+    reviewer_model: Option<String>,
+    timeout: u64,
+    idle: u64,
+    check_timeout: u64,
+    repo: Option<PathBuf>,
+    json: bool,
+}
+
+/// Master provider from ~/.orc/config.json, or "claude" if there is no config yet.
+fn master_provider() -> String {
+    orc_core::config::default_config_path()
+        .and_then(|p| orc_core::config::load_config(&p))
+        .map(|c| c.master_provider)
+        .unwrap_or_else(|_| "claude".to_string())
+}
+
+fn lookup_provider(name: &str) -> anyhow::Result<Box<dyn orc_core::invoke::provider::Provider>> {
+    orc_core::invoke::get_provider(name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "provider '{name}' can't run tasks yet (available: {})",
+            orc_core::invoke::providers::all_providers().join(", ")
+        )
+    })
+}
+
+/// `orc run`: returns the process exit code (the verdict's).
+fn cmd_run(args: RunArgs) -> anyhow::Result<i32> {
+    use orc_core::session::types::StreamEvent;
+    use orc_core::verify::{run_stage, Progress, StageSpec, Verdict};
+
+    if args.task.trim().is_empty() {
+        anyhow::bail!("task cannot be empty");
+    }
+    let working_dir = match args.repo {
+        Some(repo) => repo.canonicalize()?,
+        None => std::env::current_dir()?,
+    };
+    let master = master_provider();
+    let agent = lookup_provider(args.provider.as_deref().unwrap_or(&master))?;
+    let reviewer = if args.accept.is_empty() {
+        None
+    } else {
+        let name = args.reviewer.clone().unwrap_or_else(|| master.clone());
+        if name == agent.name() && !args.json {
+            eprintln!("note: reviewer is the same provider as the agent ({name}); use --reviewer for an independent check");
+        }
+        Some(lookup_provider(&name)?)
+    };
+
+    let now = chrono::Local::now();
+    let run_id = format!("run-{}-{:04x}", now.format("%Y%m%d-%H%M%S"), now.timestamp_subsec_micros() & 0xffff);
+    let spec = StageSpec {
+        run_id,
+        task: args.task,
+        working_dir,
+        model: args.model,
+        checks: args.checks,
+        accept: args.accept,
+        reviewer_model: args.reviewer_model,
+        timeout_secs: args.timeout,
+        idle_secs: args.idle,
+        check_timeout_secs: args.check_timeout,
+    };
+
+    let json = args.json;
+    if !json {
+        eprintln!("▸ {} working on: {}", agent.name(), spec.task);
+    }
+    let progress = move |p: Progress| {
+        if json {
+            return;
+        }
+        match p {
+            Progress::Agent(StreamEvent::Text { content }) => eprintln!("  {}", content.trim_end()),
+            Progress::Agent(StreamEvent::ToolStart { name, .. }) => eprintln!("  · {name}"),
+            Progress::Agent(StreamEvent::Error { message }) => eprintln!("  ! {message}"),
+            Progress::Agent(_) => {}
+            Progress::AgentFinished { exit_code, exit_reason, duration_ms } => {
+                eprintln!("▸ agent finished: exit {exit_code} ({exit_reason:?}) in {}s", duration_ms / 1000)
+            }
+            Progress::CheckStarted(cmd) => eprintln!("▸ check: {cmd}"),
+            Progress::CheckFinished(r) => {
+                eprintln!("  {} {} ({}s)", if r.passed { "✓" } else { "✗" }, r.command, r.duration_ms / 1000)
+            }
+            Progress::ReviewStarted(name) => eprintln!("▸ review by {name}"),
+            Progress::Skipped(why) => eprintln!("▸ {why}"),
+        }
+    };
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let report = rt.block_on(run_stage(&spec, agent.as_ref(), reviewer.as_deref(), progress))?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(report.exit_code);
+    }
+
+    if let Some(review) = &report.review {
+        for r in &review.results {
+            eprintln!("  {} {} — {}", if r.pass { "✓" } else { "✗" }, r.criterion, r.reason);
+        }
+    }
+    match &report.verdict {
+        Verdict::Pass => println!("PASS"),
+        Verdict::Fail { reason, evidence } => {
+            println!("FAIL: {reason}");
+            if !evidence.is_empty() {
+                println!("{evidence}");
+            }
+        }
+        Verdict::Stuck { reason, after_secs } => println!("STUCK: {reason} (after {after_secs}s)"),
+        Verdict::Limit { provider, message } => println!("LIMIT: {provider}: {message}"),
+    }
+    println!("run {} · log {}", report.run_id, report.log_path.display());
+    Ok(report.exit_code)
 }
 
 fn cmd_flow_create(name: &str, prompt: Option<&str>) -> anyhow::Result<()> {

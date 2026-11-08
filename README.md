@@ -2,7 +2,7 @@
 
 `orc` gets a coding task done correctly by whichever coding agents are best and available. It routes each request to the right agent CLI (`claude`, `codex`, `gemini`, `opencode`, `kimi` and others), carries context between them, and keeps a record of every step.
 
-Direction and roadmap: [`docs/plans/2026-11-08-orc-positioning.md`](docs/plans/2026-11-08-orc-positioning.md). The loop is **route → run → verify → hand off on failure**. Routing, cross-tool handoff and the run log exist today; verification and automatic handoff are next.
+Direction and roadmap: [`docs/plans/2026-11-08-orc-positioning.md`](docs/plans/2026-11-08-orc-positioning.md). The loop is **route → run → verify → hand off on failure**. Routing, verification (`orc run`), cross-tool handoff and the run log exist today; automatic handoff on failure is next.
 
 ## Install
 
@@ -11,6 +11,30 @@ cargo install --path crates/orc-bin   # installs orc to ~/.cargo/bin
 orc init                              # detect installed coding CLIs, write ~/.orc/config.json
 orc providers doctor                  # check each provider is installed and signed in
 ```
+
+## Run a task and verify it
+
+```bash
+orc run "add auth middleware with tests" --provider claude \
+  --check "cargo test" --check "cargo clippy -- -D warnings" \
+  --accept "public functions have doc comments" --reviewer codex
+```
+
+The agent does the task, then orc decides whether it is done; the agent's own claim is not taken as the answer:
+
+- `--check <cmd>` runs a shell command in the repo; it must exit 0. All checks run, and failing output becomes the evidence.
+- `--accept <criterion>` is judged by a reviewer agent (`--reviewer`, default: master provider), which runs **read-only** and sees the diff since the run started.
+- The agent is killed if it goes silent for `--idle` seconds (default 300) or runs past `--timeout` (default 1800).
+
+| Verdict | Meaning | Exit code |
+|---|---|---|
+| `PASS` | Agent finished, every check passed, reviewer accepted every criterion | 0 |
+| `FAIL` | Agent errored, a check failed, or the reviewer rejected a criterion (with evidence) | 1 |
+| `STUCK` | Agent went silent or ran too long and was killed | 2 |
+| `LIMIT` | Provider hit a rate limit or quota | 3 |
+| | orc itself failed (bad arguments, unknown provider) | 4 |
+
+`--json` prints the full report. Every step is logged to `.orc/runs/<run_id>/events.jsonl`. `orc run` currently supports `claude` and `codex` as agents and reviewers.
 
 ## Use
 
