@@ -169,9 +169,9 @@ pub fn is_stale(index: &SessionIndex, ttl_secs: i64) -> bool {
     age.num_seconds() > ttl_secs
 }
 
+/// Session index cache: `$ORC_HOME/sessions.jsonl`, else `~/.orc/sessions.jsonl`.
 pub fn default_index_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("no home dir"))?;
-    Ok(home.join(".orc").join("sessions.jsonl"))
+    Ok(crate::config::config_dir()?.join("sessions.jsonl"))
 }
 
 #[cfg(test)]
@@ -229,6 +229,22 @@ mod tests {
         let loaded = load_index(&index_path).unwrap();
 
         assert_eq!(loaded.sessions.len(), count);
+    }
+
+    #[test]
+    fn default_index_path_honours_orc_home() {
+        // The path keeps ".orc" in it so config::tests::config_dir_returns_path
+        // still passes if it runs while ORC_HOME is set here.
+        let tmp = TempDir::new().unwrap();
+        let orc_home = tmp.path().join("custom.orc");
+        let previous = std::env::var_os("ORC_HOME");
+        std::env::set_var("ORC_HOME", &orc_home);
+        let path = default_index_path();
+        match previous {
+            Some(v) => std::env::set_var("ORC_HOME", v),
+            None => std::env::remove_var("ORC_HOME"),
+        }
+        assert_eq!(path.unwrap(), orc_home.join("sessions.jsonl"));
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "orc",
+    version,
     about = "Get a coding task done by whichever coding agent is best and available: route, run, verify, hand off",
     after_help = "Exit codes for `orc run`: 0 pass, 1 fail, 2 stuck, 3 rate-limited, 4 orc error (including bad arguments)."
 )]
@@ -953,6 +954,19 @@ mod tests {
     fn test_hub_subcommand_exists() {
         let result = Cli::try_parse_from(["orc", "hub"]);
         assert!(result.is_ok(), "orc hub should be a valid subcommand");
+    }
+
+    #[test]
+    fn test_version_flag_prints_cargo_version() {
+        for flag in ["--version", "-V"] {
+            let err = Cli::try_parse_from(["orc", flag]).err().expect("version flag exits early");
+            assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+            assert!(!err.use_stderr(), "version goes to stdout with exit 0");
+            assert_eq!(
+                err.to_string().trim(),
+                format!("orc {}", env!("CARGO_PKG_VERSION"))
+            );
+        }
     }
 
     fn make_session(
