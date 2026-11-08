@@ -1,6 +1,8 @@
 # orc
 
-> **Status: early experiment.** orc started in February 2026 (the first commit is dated 2026-02-20), when vibe coding — building software by directing AI coding agents — had just gone viral. It began as a way to make several coding agents work together instead of one at a time. It is shared as it is: useful, tested, but young. Expect rough edges and changes. The planning notes in [`docs/plans/`](docs/plans/) are the working record of how it was built.
+> **Status: parked experiment (November 2026).** orc started in February 2026 (the first commit is dated 2026-02-20), when vibe coding — building software by directing AI coding agents — had just gone viral. It began as a way to make several coding agents work together instead of one at a time. It is shared as it is: it works and is tested, but it is not actively developed. The planning notes in [`docs/plans/`](docs/plans/) are the working record of how it was built.
+>
+> **Why it's parked:** trying it on real work showed that its value (an independent check, handoff when an agent hits a limit, routing from past results) only pays off with a `--check` on every run, and nobody wants to type one each time, any more than a long prompt. The missing piece is default checks per repo (e.g. `Cargo.toml` → `cargo test`), so that `orc run "fix --version"` is as easy as typing it into a single agent. If you pick this up, start there.
 
 `orc` gets a coding task done correctly by whichever coding agents are best and available. It routes each request to the right agent CLI (`claude`, `codex`, `gemini`, `opencode`, `kimi` and others), carries context between them, and keeps a record of every step.
 
