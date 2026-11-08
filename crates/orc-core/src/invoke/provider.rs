@@ -61,6 +61,11 @@ pub trait Provider: Send + Sync {
     fn supports_read_only(&self) -> bool {
         false
     }
+
+    /// Cost of the run in USD, if the CLI reports it in its output.
+    fn extract_cost(&self, _raw_output: &str) -> Option<f64> {
+        None
+    }
 }
 
 /// Doctor report for a CLI that is only checked for being on PATH.

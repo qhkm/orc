@@ -55,9 +55,13 @@ enum Commands {
     Run {
         /// The task for the agent
         task: String,
-        /// Agent that does the work (default: master provider)
+        /// Agent that does the work (default: routed from run history; see `orc stats`)
         #[arg(long, short)]
         provider: Option<String>,
+        /// Task category for routing and stats: debug, implement, review, plan, question
+        /// (default: guessed from the task wording)
+        #[arg(long, value_parser = ["debug", "implement", "review", "plan", "question"])]
+        category: Option<String>,
         /// Model for the agent
         #[arg(long, short)]
         model: Option<String>,
@@ -96,6 +100,15 @@ enum Commands {
         #[arg(long)]
         repo: Option<PathBuf>,
         /// Print the report as JSON instead of live output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show how each provider has done on `orc run` tasks, by category
+    Stats {
+        /// Only this category
+        #[arg(long)]
+        category: Option<String>,
+        /// Print as JSON
         #[arg(long)]
         json: bool,
     },
@@ -162,9 +175,14 @@ fn main() -> anyhow::Result<()> {
             cmd_import(&file, &r#in)?;
         }
 
+        Some(Commands::Stats { category, json }) => {
+            cmd_stats(category.as_deref(), json)?;
+        }
+
         Some(Commands::Run {
             task,
             provider,
+            category,
             model,
             checks,
             accept,
@@ -180,7 +198,7 @@ fn main() -> anyhow::Result<()> {
             json,
         }) => {
             let args = RunArgs {
-                task, provider, model, checks, accept, fallback, no_fallback, max_attempts,
+                task, provider, category, model, checks, accept, fallback, no_fallback, max_attempts,
                 reviewer, reviewer_model, timeout, idle, check_timeout, repo, json,
             };
             match cmd_run(args) {
@@ -467,6 +485,7 @@ fn cmd_import(file: &PathBuf, target_tool: &str) -> anyhow::Result<()> {
 struct RunArgs {
     task: String,
     provider: Option<String>,
+    category: Option<String>,
     model: Option<String>,
     checks: Vec<String>,
     accept: Vec<String>,
@@ -482,12 +501,47 @@ struct RunArgs {
     json: bool,
 }
 
-/// Master provider from ~/.orc/config.json, or "claude" if there is no config yet.
-fn master_provider() -> String {
-    orc_core::config::default_config_path()
-        .and_then(|p| orc_core::config::load_config(&p))
-        .map(|c| c.master_provider)
-        .unwrap_or_else(|_| "claude".to_string())
+/// `orc stats`: per category and provider, from ~/.orc/history.jsonl.
+fn cmd_stats(category: Option<&str>, json: bool) -> anyhow::Result<()> {
+    use orc_core::history::{history_path, load_records, stats_by_category};
+
+    let path = history_path()?;
+    let records = load_records(&path);
+    let mut by_category = stats_by_category(&records);
+    if let Some(c) = category {
+        by_category.retain(|k, _| k == c);
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&by_category)?);
+        return Ok(());
+    }
+    if by_category.is_empty() {
+        println!("No `orc run` history yet ({}).", path.display());
+        return Ok(());
+    }
+    println!("{:<10} {:<10} {:>8} {:>10} {:>5} {:>6} {:>6} {:>7} {:>9}", "CATEGORY", "PROVIDER", "ATTEMPTS", "PASS", "FAIL", "STUCK", "LIMIT", "AVG", "COST");
+    println!("{}", "-".repeat(82));
+    for (cat, stats) in &by_category {
+        let mut stats = stats.clone();
+        stats.sort_by(|a, b| b.pass_rate().unwrap_or(-1.0).total_cmp(&a.pass_rate().unwrap_or(-1.0)));
+        for s in &stats {
+            let rate = s.pass_rate().map(|r| format!("{:.0}%", r * 100.0)).unwrap_or_else(|| "-".into());
+            println!(
+                "{:<10} {:<10} {:>8} {:>10} {:>5} {:>6} {:>6} {:>6}s {:>9}",
+                cat,
+                s.provider,
+                s.attempts,
+                format!("{} ({rate})", s.passes),
+                s.fails,
+                s.stuck,
+                s.limits,
+                s.avg_duration_ms() / 1000,
+                s.total_cost_usd.map(|c| format!("${c:.4}")).unwrap_or_else(|| "-".into()),
+            );
+        }
+    }
+    println!("\nPass rate for routing excludes LIMIT attempts. History: {}", path.display());
+    Ok(())
 }
 
 fn lookup_provider(name: &str) -> anyhow::Result<Box<dyn orc_core::invoke::provider::Provider>> {
@@ -513,19 +567,46 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<i32> {
         Some(repo) => repo.canonicalize()?,
         None => std::env::current_dir()?,
     };
-    let master = master_provider();
-    let primary = args.provider.clone().unwrap_or_else(|| master.clone());
+    let config = orc_core::config::default_config_path()
+        .and_then(|p| orc_core::config::load_config(&p))
+        .ok();
+    let master = config.as_ref().map(|c| c.master_provider.clone()).unwrap_or_else(|| "claude".to_string());
+    let routing = config
+        .as_ref()
+        .and_then(|c| c.routing.clone())
+        .unwrap_or_else(orc_core::config::default_routing);
+
+    // Route: rank installed providers for this kind of task from the run history.
+    let category = args.category.clone().unwrap_or_else(|| orc_core::route::categorize(&args.task).to_string());
+    let installed: Vec<String> = orc_core::invoke::providers::all_providers()
+        .into_iter()
+        .filter(|n| lookup_provider(n).map(|p| p.detect().installed).unwrap_or(false))
+        .map(str::to_string)
+        .collect();
+    let history_path = orc_core::history::history_path()?;
+    let history = orc_core::history::load_records(&history_path);
+    let configured = routing.get(&category);
+    let plan = orc_core::route::rank(
+        &category,
+        &installed,
+        &history,
+        configured.map(|r| r.provider.as_str()),
+        &master,
+        chrono::Utc::now(),
+    );
+    let routed = args.provider.is_none();
+    let primary = match &args.provider {
+        Some(p) => p.clone(),
+        None => plan.order().first().cloned().ok_or_else(|| {
+            anyhow::anyhow!("no installed provider can run tasks; see `orc providers doctor`")
+        })?,
+    };
 
     // Providers in hand-off order: the primary first, then the fallbacks.
     let mut names = vec![primary.clone()];
     if !args.no_fallback {
         if args.fallback.is_empty() {
-            for name in orc_core::invoke::providers::all_providers() {
-                let installed = lookup_provider(name).map(|p| p.detect().installed).unwrap_or(false);
-                if installed {
-                    names.push(name.to_string());
-                }
-            }
+            names.extend(plan.order());
         } else {
             names.extend(args.fallback.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
         }
@@ -534,6 +615,12 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<i32> {
     names.retain(|n| seen.insert(n.clone()));
     let agents = names.iter().map(|n| lookup_provider(n)).collect::<anyhow::Result<Vec<_>>>()?;
     let agent_refs: Vec<&dyn Provider> = agents.iter().map(|a| a.as_ref()).collect();
+
+    // --model wins; otherwise the routing table's model if it names the first provider.
+    let model = args
+        .model
+        .clone()
+        .or_else(|| configured.filter(|r| r.provider == primary).and_then(|r| r.model.clone()));
 
     let reviewer = if args.accept.is_empty() {
         None
@@ -565,8 +652,10 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<i32> {
         attempt: 1,
         handoff_from: None,
         base_commit: None,
+        category,
+        history_path: Some(history_path),
         working_dir,
-        model: args.model,
+        model,
         checks: args.checks,
         accept: args.accept,
         reviewer_model: args.reviewer_model,
@@ -578,6 +667,11 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<i32> {
     let json = args.json;
     if !json {
         eprintln!("▸ task: {}", spec.task);
+        if routed {
+            eprintln!("  {}", plan.explain());
+        } else {
+            eprintln!("  category: {} (provider chosen with --provider)", spec.category);
+        }
         if names.len() > 1 {
             eprintln!("  hand-off order: {} (max {} attempts)", names.join(" → "), args.max_attempts);
         }

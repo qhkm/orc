@@ -25,7 +25,11 @@ pub fn extract_result_meta(raw_output: &str) -> ClaudeResultMeta {
         };
         if val.get("type").and_then(|t| t.as_str()) == Some("result") {
             meta.result_text = val.get("result").and_then(|r| r.as_str()).map(|s| s.to_string());
-            meta.cost_usd = val.get("cost_usd").and_then(|c| c.as_f64());
+            // Current Claude Code reports `total_cost_usd`; older versions `cost_usd`.
+            meta.cost_usd = val
+                .get("total_cost_usd")
+                .or_else(|| val.get("cost_usd"))
+                .and_then(|c| c.as_f64());
             meta.num_turns = val.get("num_turns").and_then(|n| n.as_u64());
             meta.session_id = val.get("session_id").and_then(|s| s.as_str()).map(|s| s.to_string());
             break;
@@ -167,6 +171,10 @@ impl Provider for ClaudeProvider {
         true
     }
 
+    fn extract_cost(&self, raw_output: &str) -> Option<f64> {
+        extract_result_meta(raw_output).cost_usd
+    }
+
     fn detect(&self) -> DoctorReport {
         crate::invoke::provider::detect_binary("claude", "claude")
     }
@@ -202,6 +210,14 @@ mod tests {
         let line = r#"{"type":"result","subtype":"error_max_turns","is_error":true}"#;
         let event = provider.parse_stream(line);
         assert!(matches!(event, Some(StreamEvent::Error { message }) if message == "error_max_turns"));
+    }
+
+    #[test]
+    fn extracts_cost_from_result_event() {
+        let raw = "{\"type\":\"assistant\",\"message\":{\"content\":[]}}\n{\"type\":\"result\",\"subtype\":\"success\",\"total_cost_usd\":0.0123,\"result\":\"ok\"}";
+        assert_eq!(ClaudeProvider.extract_cost(raw), Some(0.0123));
+        assert_eq!(ClaudeProvider.extract_cost("{\"type\":\"result\",\"cost_usd\":0.5}"), Some(0.5));
+        assert_eq!(ClaudeProvider.extract_cost(""), None);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 `orc` gets a coding task done correctly by whichever coding agents are best and available. It routes each request to the right agent CLI (`claude`, `codex`, `gemini`, `opencode`, `kimi` and others), carries context between them, and keeps a record of every step.
 
-Direction and roadmap: [`docs/plans/2026-11-08-orc-positioning.md`](docs/plans/2026-11-08-orc-positioning.md). The loop is **route → run → verify → hand off on failure**. Routing, verification and automatic handoff (`orc run`), cross-tool session resume and the run log exist today; routing that learns from the run log is next.
+Direction and roadmap: [`docs/plans/2026-11-08-orc-positioning.md`](docs/plans/2026-11-08-orc-positioning.md). The loop is **route → run → verify → hand off on failure**. All three steps work in `orc run`: routing that learns from past runs, verification, and automatic handoff. Cross-tool session resume and the REPL are there too.
 
 ## Install
 
@@ -62,6 +62,39 @@ The next agent gets the original task plus a handoff brief: the verdict, its evi
 - `--model` applies to the first provider only, since model names differ per CLI.
 
 `--json` prints the full report with every attempt. Every step, including each handoff, is logged to `.orc/runs/<run_id>/events.jsonl`.
+
+### Who does the task
+
+Leave out `--provider` and orc picks, from how each agent did on this kind of task before:
+
+```bash
+orc run "The add function in calc.sh is wrong. Fix it." --check ./test.sh
+```
+
+From two real runs of the same kind of task (route lines shown in the current, shortened format). The first had no history, so the routing table chose codex (configured for `debug`); codex hit its usage limit and orc handed off to opencode. The second run used that record:
+
+```
+# run 1
+▸ route (debug): codex — no debug history yet; configured default · then 7 with no debug history (opencode, claude, …)
+PASS after 2 attempts (codex → opencode)
+# run 2
+▸ route (debug): opencode — 1/1 passed · then 6 with no debug history (claude, …) · codex — rate-limited 0m ago
+PASS
+```
+
+- Every attempt is recorded in `~/.orc/history.jsonl` (category, provider, verdict, time, cost where the CLI reports it). `ORC_HOME` moves `~/.orc`.
+- The category comes from the task's wording (`debug`, `implement`, `review`, `plan`, `question`) or from `--category`.
+- Providers are ranked by smoothed pass rate in that category, `(passes + 1) / (attempts + 2)`, so one lucky run doesn't beat a long record. Rate-limited attempts don't count against skill. A provider limited in the past hour goes last.
+- With no history, the routing table in `~/.orc/config.json` decides (e.g. `debug` → claude). Real results override it after a few runs.
+- The ranking also sets the hand-off order. `--provider X` puts X first and keeps the ranking for the fallbacks.
+
+`orc stats` shows the record behind the choices:
+
+```
+CATEGORY   PROVIDER   ATTEMPTS       PASS  FAIL  STUCK  LIMIT     AVG      COST
+debug      opencode          2   2 (100%)     0      0      0     28s   $0.0168
+debug      codex             1      0 (-)     0      0      1     14s         -
+```
 
 ### Supported agents
 

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 use crate::capsule::{append_event, capsule_path, CapsuleEvent};
+use crate::history::{append_record, AttemptRecord};
 use crate::invoke::{execute_stream, ExitReason, InvokeOpts, Provider};
 use crate::session::types::StreamEvent;
 use super::{decide, detect_limit, review, run_check, CheckResult, Review, Verdict};
@@ -27,6 +28,10 @@ pub struct StageSpec {
     /// Diff base for the review. None = HEAD when the stage starts.
     /// A relay pins the first attempt's base so later reviews see the whole run.
     pub base_commit: Option<String>,
+    /// Task category, for the history record and routing (see `route::categorize`).
+    pub category: String,
+    /// Where to append the attempt's `history::AttemptRecord`; None = don't record.
+    pub history_path: Option<PathBuf>,
     pub working_dir: PathBuf,
     pub model: Option<String>,
     /// `--check` shell commands.
@@ -61,6 +66,7 @@ pub struct StageReport {
     pub agent_response: String,
     pub agent_exit_code: i32,
     pub agent_exit_reason: ExitReason,
+    pub cost_usd: Option<f64>,
     pub checks: Vec<CheckResult>,
     pub review: Option<Review>,
     pub base_commit: Option<String>,
@@ -100,6 +106,7 @@ pub async fn run_stage(
             accept: spec.accept.clone(),
             attempt: spec.attempt,
             handoff_from: spec.handoff_from.clone(),
+            category: Some(spec.category.clone()),
             ts: Utc::now(),
         },
     )?;
@@ -177,6 +184,21 @@ pub async fn run_stage(
         &log_path,
         &CapsuleEvent::Verdict { provider: provider.clone(), verdict: verdict.clone(), duration_ms, ts: Utc::now() },
     )?;
+    if let Some(history) = &spec.history_path {
+        let record = AttemptRecord {
+            ts: Utc::now(),
+            repo: dir.to_string_lossy().into_owned(),
+            run_id: spec.run_id.clone(),
+            attempt: spec.attempt,
+            category: spec.category.clone(),
+            provider: provider.clone(),
+            model: spec.model.clone(),
+            verdict: verdict.label().to_string(),
+            duration_ms,
+            cost_usd: agent_result.cost_usd,
+        };
+        append_record(history, &record)?;
+    }
 
     Ok(StageReport {
         run_id: spec.run_id.clone(),
@@ -187,6 +209,7 @@ pub async fn run_stage(
         agent_response: agent_result.response,
         agent_exit_code: agent_result.exit_code,
         agent_exit_reason: agent_result.exit_reason,
+        cost_usd: agent_result.cost_usd,
         checks,
         review: review_result,
         base_commit,
@@ -277,6 +300,8 @@ mod tests {
             attempt: 1,
             handoff_from: None,
             base_commit: None,
+            category: "debug".into(),
+            history_path: None,
             working_dir: dir.to_path_buf(),
             model: None,
             checks: checks.iter().map(|s| s.to_string()).collect(),
@@ -372,6 +397,22 @@ mod tests {
         let report = run_stage(&s, &agent, None, |_| {}).await.unwrap();
         assert!(matches!(report.verdict, Verdict::Stuck { .. }));
         assert_eq!(report.exit_code, 2);
+    }
+
+    #[tokio::test]
+    async fn each_verdict_is_appended_to_history() {
+        let dir = repo();
+        let history = dir.path().join("orc-home/history.jsonl");
+        let mut s = spec(dir.path(), &[TEST_ADD], &[]);
+        s.history_path = Some(history.clone());
+        let agent = ShellProvider::named("opencode", "echo ok");
+        run_stage(&s, &agent, None, |_| {}).await.unwrap();
+        let records = crate::history::load_records(&history);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].provider, "opencode");
+        assert_eq!(records[0].category, "debug");
+        assert_eq!(records[0].verdict, "pass");
+        assert_eq!(records[0].run_id, "run-test");
     }
 
     #[tokio::test]

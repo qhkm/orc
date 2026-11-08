@@ -75,6 +75,17 @@ impl Provider for OpenCodeProvider {
     fn supports_read_only(&self) -> bool {
         true
     }
+
+    /// Sum of `step_finish.part.cost` over all steps.
+    fn extract_cost(&self, raw_output: &str) -> Option<f64> {
+        let costs: Vec<f64> = raw_output
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("step_finish"))
+            .filter_map(|v| v.get("part")?.get("cost")?.as_f64())
+            .collect();
+        (!costs.is_empty()).then(|| costs.iter().sum())
+    }
 }
 
 #[cfg(test)]
@@ -122,5 +133,13 @@ mod tests {
         let finish = r#"{"type":"step_finish","part":{"reason":"stop","type":"step-finish","cost":0.0076}}"#;
         assert!(p.parse_stream(finish).is_none());
         assert!(p.parse_stream("not json").is_none());
+    }
+
+    #[test]
+    fn cost_sums_step_finishes() {
+        let raw = "{\"type\":\"step_finish\",\"part\":{\"reason\":\"tool-calls\",\"cost\":0.007681326}}\n{\"type\":\"text\",\"part\":{\"text\":\"done\"}}\n{\"type\":\"step_finish\",\"part\":{\"reason\":\"stop\",\"cost\":0.000166374}}";
+        let cost = OpenCodeProvider.extract_cost(raw).unwrap();
+        assert!((cost - 0.0078477).abs() < 1e-6, "{cost}");
+        assert_eq!(OpenCodeProvider.extract_cost("{\"type\":\"text\"}"), None);
     }
 }

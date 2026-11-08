@@ -77,7 +77,11 @@ pub fn default_routing() -> HashMap<String, RouteEntry> {
     routing
 }
 
+/// orc's global directory: `$ORC_HOME` if set, else `~/.orc`.
 pub fn config_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("ORC_HOME").filter(|d| !d.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("no home directory"))?;
     Ok(home.join(".orc"))
 }

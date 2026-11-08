@@ -126,6 +126,7 @@ mod tests {
             exit_code,
             exit_reason,
             duration_ms: 42_000,
+            cost_usd: None,
         }
     }
 

@@ -35,6 +35,8 @@ pub struct InvokeResult {
     pub exit_code: i32,
     pub exit_reason: ExitReason,
     pub duration_ms: u64,
+    /// Reported by the CLI, if it reports cost (see `Provider::extract_cost`).
+    pub cost_usd: Option<f64>,
 }
 
 /// Invoke a provider and collect all output (non-streaming)
@@ -162,9 +164,11 @@ where
     let _ = tokio::time::timeout(GRACE, stderr_task).await;
     let stderr = String::from_utf8_lossy(&stderr_buf.lock().unwrap()).into_owned();
 
+    let raw_output = raw_lines.join("\n");
     Ok(InvokeResult {
         response: response_parts.join(""),
-        raw_output: raw_lines.join("\n"),
+        cost_usd: provider.extract_cost(&raw_output),
+        raw_output,
         stderr,
         errors,
         exit_code,

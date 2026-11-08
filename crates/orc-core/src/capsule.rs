@@ -54,6 +54,8 @@ pub enum CapsuleEvent {
         attempt: u32,
         #[serde(default)]
         handoff_from: Option<String>,
+        #[serde(default)]
+        category: Option<String>,
         ts: DateTime<Utc>,
     },
     /// `orc run`: a stage did not pass and orc handed the task to another attempt.
