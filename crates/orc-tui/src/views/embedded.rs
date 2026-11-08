@@ -23,6 +23,10 @@ pub struct EmbeddedState {
     pub is_running: bool,
     /// Channel receiver — background reader thread sends decoded lines here.
     line_rx: Option<Receiver<String>>,
+    /// Channel receiver — background reader thread sends raw byte chunks here (PTY mode).
+    byte_rx: Option<Receiver<Vec<u8>>>,
+    /// Handle to the PTY master for resizing.
+    master_pty: Option<Box<dyn portable_pty::MasterPty + Send>>,
     /// Sender used to signal the reader thread to shut down.
     shutdown_tx: Option<std::sync::mpsc::SyncSender<()>>,
     /// Handle to the background reader thread so it can be joined on stop.
@@ -38,6 +42,8 @@ impl EmbeddedState {
             child: None,
             is_running: false,
             line_rx: None,
+            byte_rx: None,
+            master_pty: None,
             shutdown_tx: None,
             thread_handle: None,
         }
@@ -82,11 +88,65 @@ impl EmbeddedState {
 
         // Reader for receiving PTY output.  We move it into a background thread
         // to avoid blocking the TUI event loop.
-        let mut reader = pair.master.try_clone_reader()?;
-        let (tx, rx) = mpsc::channel::<String>();
+        let reader = pair.master.try_clone_reader()?;
 
-        // Shutdown channel: sending () (or dropping the sender) tells the
-        // reader thread to exit cleanly.
+        self.setup_line_reader_thread(reader);
+        self.is_running = true;
+        Ok(())
+    }
+
+    /// Launch a provider CLI by name (e.g. "claude", "codex") inside a PTY.
+    ///
+    /// Unlike `start()` which resumes an existing session, this starts a fresh
+    /// interactive provider process. Raw byte output is forwarded via `poll_raw_output()`.
+    pub fn start_provider(
+        &mut self,
+        provider: &str,
+        cwd: &str,
+        model: Option<&str>,
+        rows: u16,
+        cols: u16,
+    ) -> Result<()> {
+        // Stop any existing process first.
+        if self.is_running {
+            self.stop();
+        }
+
+        let (program, args) = build_provider_command(provider, model);
+
+        let pty_system = native_pty_system();
+        let pair = pty_system.openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+
+        let mut builder = CommandBuilder::new(&program);
+        for arg in &args {
+            builder.arg(arg);
+        }
+        builder.cwd(cwd);
+
+        let child = pair.slave.spawn_command(builder)?;
+        self.child = Some(child);
+
+        let writer = pair.master.take_writer()?;
+        self.master_writer = Some(writer);
+
+        let reader = pair.master.try_clone_reader()?;
+
+        // Store master PTY handle for resizing.
+        self.master_pty = Some(pair.master);
+
+        self.setup_byte_reader_thread(reader);
+        self.is_running = true;
+        Ok(())
+    }
+
+    /// Set up a background thread that reads lines (for legacy `start()` mode).
+    fn setup_line_reader_thread(&mut self, mut reader: Box<dyn Read + Send>) {
+        let (tx, rx) = mpsc::channel::<String>();
         let (shutdown_tx, shutdown_rx) = std::sync::mpsc::sync_channel::<()>(1);
 
         const MAX_PARTIAL: usize = 65536;
@@ -95,22 +155,18 @@ impl EmbeddedState {
             let mut buf = [0u8; 4096];
             let mut partial = String::new();
             loop {
-                // Check for shutdown signal before blocking on read.
                 if shutdown_rx.try_recv().is_ok() {
                     break;
                 }
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        // Append raw bytes, converting leniently to UTF-8.
                         partial.push_str(&String::from_utf8_lossy(&buf[..n]));
-                        // Flush complete lines.
                         while let Some(pos) = partial.find('\n') {
                             let line = partial[..pos].to_string();
                             let _ = tx.send(line);
                             partial.drain(..=pos);
                         }
-                        // Cap the partial buffer to avoid unbounded growth.
                         if partial.len() > MAX_PARTIAL {
                             let keep = partial.split_off(partial.len() - MAX_PARTIAL / 2);
                             partial = keep;
@@ -119,7 +175,6 @@ impl EmbeddedState {
                     Err(_) => break,
                 }
             }
-            // Send any remaining partial line.
             if !partial.is_empty() {
                 let _ = tx.send(partial);
             }
@@ -128,8 +183,34 @@ impl EmbeddedState {
         self.line_rx = Some(rx);
         self.shutdown_tx = Some(shutdown_tx);
         self.thread_handle = Some(handle);
-        self.is_running = true;
-        Ok(())
+    }
+
+    /// Set up a background thread that reads raw byte chunks (for PTY mode).
+    fn setup_byte_reader_thread(&mut self, mut reader: Box<dyn Read + Send>) {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::sync_channel::<()>(1);
+
+        let handle = std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                if shutdown_rx.try_recv().is_ok() {
+                    break;
+                }
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        self.byte_rx = Some(rx);
+        self.shutdown_tx = Some(shutdown_tx);
+        self.thread_handle = Some(handle);
     }
 
     /// Write raw bytes to the PTY master (provider stdin / keypresses).
@@ -179,6 +260,51 @@ impl EmbeddedState {
         }
     }
 
+    /// Non-blocking drain of raw byte chunks from the PTY reader.
+    ///
+    /// Returns all pending byte chunks. Feed these directly to a `vt100::Parser`.
+    pub fn poll_raw_output(&mut self) -> Vec<Vec<u8>> {
+        let mut chunks = Vec::new();
+        let Some(rx) = &self.byte_rx else {
+            return chunks;
+        };
+
+        loop {
+            match rx.try_recv() {
+                Ok(chunk) => chunks.push(chunk),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.is_running = false;
+                    self.byte_rx = None;
+                    break;
+                }
+            }
+        }
+
+        // Check if the child has exited.
+        if self.is_running {
+            if let Some(child) = &mut self.child {
+                if let Ok(Some(_)) = child.try_wait() {
+                    self.is_running = false;
+                }
+            }
+        }
+
+        chunks
+    }
+
+    /// Resize the PTY to new dimensions.
+    pub fn resize(&self, rows: u16, cols: u16) {
+        if let Some(ref pty) = self.master_pty {
+            let _ = pty.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
+    }
+
     /// Kill the child process and clean up resources.
     pub fn stop(&mut self) {
         // Signal the reader thread to exit before killing the child.
@@ -194,6 +320,8 @@ impl EmbeddedState {
         self.master_writer = None;
         self.child = None;
         self.line_rx = None;
+        self.byte_rx = None;
+        self.master_pty = None;
 
         // Join the reader thread to reclaim its resources.
         if let Some(handle) = self.thread_handle.take() {
@@ -205,6 +333,22 @@ impl EmbeddedState {
 impl Default for EmbeddedState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Build the command (program + args) for a given provider.
+pub fn build_provider_command(provider: &str, model: Option<&str>) -> (String, Vec<String>) {
+    match provider {
+        "claude" => {
+            let mut args = vec!["--dangerously-skip-permissions".to_string()];
+            if let Some(m) = model {
+                args.push("--model".to_string());
+                args.push(m.to_string());
+            }
+            ("claude".to_string(), args)
+        }
+        "codex" => ("codex".to_string(), vec![]),
+        other => (other.to_string(), vec![]),
     }
 }
 
@@ -288,5 +432,50 @@ mod tests {
         // poll_output with no PTY started should return immediately.
         state.poll_output();
         assert!(state.lines.is_empty());
+    }
+
+    #[test]
+    fn test_poll_raw_output_returns_empty_when_no_pty() {
+        let mut state = EmbeddedState::new();
+        let chunks = state.poll_raw_output();
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_build_provider_command_claude() {
+        let (program, args) = build_provider_command("claude", None);
+        assert_eq!(program, "claude");
+        assert_eq!(args, vec!["--dangerously-skip-permissions"]);
+    }
+
+    #[test]
+    fn test_build_provider_command_claude_with_model() {
+        let (program, args) = build_provider_command("claude", Some("opus"));
+        assert_eq!(program, "claude");
+        assert_eq!(
+            args,
+            vec!["--dangerously-skip-permissions", "--model", "opus"]
+        );
+    }
+
+    #[test]
+    fn test_build_provider_command_codex() {
+        let (program, args) = build_provider_command("codex", None);
+        assert_eq!(program, "codex");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_build_provider_command_other() {
+        let (program, args) = build_provider_command("kimi", None);
+        assert_eq!(program, "kimi");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_resize_no_panic_without_pty() {
+        let state = EmbeddedState::new();
+        // Should not panic when no master_pty is set.
+        state.resize(40, 120);
     }
 }
