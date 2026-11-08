@@ -1,5 +1,7 @@
 # orc
 
+> **Status: early experiment.** orc started in February 2026 (the first commit is dated 2026-02-20), when vibe coding — building software by directing AI coding agents — had just gone viral. It began as a way to make several coding agents work together instead of one at a time. It is shared as it is: useful, tested, but young. Expect rough edges and changes. The planning notes in [`docs/plans/`](docs/plans/) are the working record of how it was built.
+
 `orc` gets a coding task done correctly by whichever coding agents are best and available. It routes each request to the right agent CLI (`claude`, `codex`, `gemini`, `opencode`, `kimi` and others), carries context between them, and keeps a record of every step.
 
 Direction and roadmap: [`docs/plans/2026-11-08-orc-positioning.md`](docs/plans/2026-11-08-orc-positioning.md). The loop is **route → run → verify → hand off on failure**. All three steps work in `orc run`: routing that learns from past runs, verification, and automatic handoff. Cross-tool session resume and the REPL are there too.
@@ -11,6 +13,8 @@ cargo install --path crates/orc-bin   # installs orc to ~/.cargo/bin
 orc init                              # detect installed coding CLIs, write ~/.orc/config.json
 orc providers doctor                  # check each provider is installed and signed in
 ```
+
+> **Security: orc runs agents with full permissions.** To work unattended, implementing agents are started with their CLI's no-approval mode (`claude --dangerously-skip-permissions`, `codex --sandbox workspace-write`, `opencode --auto`, `kimi --yolo`, `gemini --yolo`, `amp --dangerously-allow-all`, `copilot --allow-all-tools`). They can edit files and run commands in the repo you point them at, without asking. Run orc only on repositories you trust, preferably in a container, VM or a disposable checkout, and review the changes before you commit them. Reviewers run read-only. `--check` commands are run with `sh -c` exactly as you write them.
 
 ## Run a task and verify it
 
@@ -182,3 +186,11 @@ orc started as a Go CLI (`cmd/orc`, `internal/cli`, `internal/handoff`, …) wit
 git show go-final --stat             # what it contained
 git worktree add ../orc-go go-final  # check it out next to this repo
 ```
+
+## Credits
+
+The session parsers for Claude Code, Codex, Copilot, Gemini, OpenCode and Droid, the session index and cross-tool resume are a Rust port of [cli-continues](https://github.com/yigitkonur/cli-continues) by Yigit Konur, used under the MIT License; the handoff brief is adapted from it. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for exactly what was ported.
+
+## License
+
+MIT © 2026 Kitakod Ventures. See [LICENSE](LICENSE).

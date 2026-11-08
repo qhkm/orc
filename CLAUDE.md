@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Read `docs/plans/2026-11-08-orc-positioning.md` before changing what the product does. In short: orc gets a coding task done correctly by routing it to the best available agent, verifying the result, and handing off to another agent on failure — with a record of every step. It is **not** a terminal/workspace manager (that is herdr's ground). Build order: **verify → hand off → route**.
 
-The older Go implementation lives in `../orc-go` and is no longer developed. This repo is Rust only.
+The original Go implementation is no longer developed; it is kept at the git tag `go-final`. The working tree is Rust only.
 
 ## Build and Test
 
@@ -20,7 +20,7 @@ cargo run -p orc -- list --tool claude  # run a subcommand
 cargo install --path crates/orc-bin     # install to ~/.cargo/bin
 ```
 
-This laptop is shared and has 8 GB RAM: check `uptime` first and pass `-j 2` to cargo builds.
+On low-memory machines, pass `-j 2` to cargo builds and don't run several builds or test runs at once.
 
 ## Workspace layout
 

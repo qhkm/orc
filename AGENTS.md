@@ -4,7 +4,7 @@
 `orc` routes a coding task to the best available agent CLI, verifies the result, and hands off to another agent on failure, keeping a record of each step. See `docs/plans/2026-11-08-orc-positioning.md`. It is not a terminal or workspace manager.
 
 ## Project Structure
-Rust workspace (the old Go version is in `../orc-go` and unmaintained):
+Rust workspace (the original Go version is unmaintained and kept at the git tag `go-final`):
 - `crates/orc-bin`: the `orc` binary and clap CLI (`src/main.rs`).
 - `crates/orc-core`: config (`config.rs`), flows (`flow/`), provider invocation and cross-tool resume (`invoke/`), session parsers for amp, claude, codex, copilot, droid, gemini, kimi and opencode (`session/`).
 - `crates/orc-repl`: REPL with classifier, router, cost tracking, slash commands and capsule event log.
@@ -13,7 +13,7 @@ Rust workspace (the old Go version is in `../orc-go` and unmaintained):
 Runtime files: `~/.orc/config.json`, `~/.orc/sessions.jsonl`, and repo-local `.orc/` (`flows/`, `runs/<id>/events.jsonl`, `context.json`).
 
 ## Build, Test, and Development Commands
-- `cargo build -j 2`: build the workspace (shared 8 GB machine; check `uptime` first).
+- `cargo build`: build the workspace (on low-memory machines, `-j 2` keeps it light).
 - `cargo test`: run all tests. `cargo test -p orc-core <name>` for a focused run.
 - `cargo run -p orc -- <subcommand>`: run without installing.
 - `cargo install --path crates/orc-bin`: install `orc`.

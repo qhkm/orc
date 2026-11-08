@@ -525,7 +525,7 @@ git commit -m "feat: config load/save with serde"
 **Files:**
 - Create: `crates/orc-core/src/session/claude.rs`
 - Test: inline `#[cfg(test)]`
-- Reference: `~/ios/cli-continues/src/parsers/claude.ts`
+- Reference: `https://github.com/yigitkonur/cli-continues/blob/main/src/parsers/claude.ts`
 
 **Step 1: Write failing test with fixture data**
 
@@ -572,7 +572,7 @@ Expected: FAIL.
 
 Parse JSONL line by line. Extract `type: "human"` for user messages, `type: "assistant"` for assistant. Summary = first user message truncated. Session ID from filename.
 
-Reference `~/ios/cli-continues/src/parsers/claude.ts` for the exact JSONL schema.
+Reference `https://github.com/yigitkonur/cli-continues/blob/main/src/parsers/claude.ts` for the exact JSONL schema.
 
 **Step 4: Run test — PASS**
 
@@ -592,7 +592,7 @@ git commit -m "feat: claude session parser"
 **Files:**
 - Create: `crates/orc-core/src/session/codex.rs`
 - Test: inline `#[cfg(test)]`
-- Reference: `~/ios/cli-continues/src/parsers/codex.ts`
+- Reference: `https://github.com/yigitkonur/cli-continues/blob/main/src/parsers/codex.ts`
 
 Same TDD pattern as Task 5. Codex stores JSONL under `~/.codex/sessions/`. Events use `type: "item.completed"` with `item.type: "agent_message"`.
 
@@ -760,7 +760,7 @@ git commit -m "feat: footer widget and session hub key handling"
 - Create: `crates/orc-core/src/invoke/mod.rs`
 - Create: `crates/orc-core/src/invoke/resume.rs`
 - Test: inline `#[cfg(test)]`
-- Reference: `~/ios/cli-continues/src/utils/resume.ts`
+- Reference: `https://github.com/yigitkonur/cli-continues/blob/main/src/utils/resume.ts`
 
 **Step 1: Write test for command building**
 
@@ -830,7 +830,7 @@ git commit -m "feat: spawn-and-exit resume for claude and codex"
 **Files:**
 - Create: `crates/orc-core/src/session/handoff.rs`
 - Test: inline `#[cfg(test)]`
-- Reference: `~/ios/cli-continues/src/utils/markdown.ts`
+- Reference: `https://github.com/yigitkonur/cli-continues/blob/main/src/utils/markdown.ts`
 
 Generate the structured markdown handoff document from `SessionContext`. Includes: overview table, tool activity, key decisions, recent conversation, files modified, pending tasks.
 
@@ -858,7 +858,7 @@ TDD: roundtrip test — write SCP file, read it back, verify fields match.
 
 On `r` key: show a popup picker of target tools (excluding source). On selection: extract context → generate markdown → write SCP file + handoff.md → spawn target CLI with context injected.
 
-Reference `~/ios/cli-continues/src/utils/resume.ts` → `crossToolResume()` for per-tool CLI syntax.
+Reference `https://github.com/yigitkonur/cli-continues/blob/main/src/utils/resume.ts` → `crossToolResume()` for per-tool CLI syntax.
 
 ---
 
@@ -871,7 +871,7 @@ Reference `~/ios/cli-continues/src/utils/resume.ts` → `crossToolResume()` for 
 - Create: `crates/orc-core/src/flow/types.rs`
 - Create: `crates/orc-core/src/flow/compile.rs`
 - Test: inline `#[cfg(test)]`
-- Reference: `~/ios/orc/internal/flow/flow.go`
+- Reference: `internal/flow/flow.go`
 
 Port `flow.Compile()` from Go. Same keyword matching + proximity-based provider assignment. Same `FlowDefinition` / `Stage` JSON shape so existing `.orc/flows/*.json` files work unchanged.
 
@@ -887,7 +887,7 @@ TDD: test that `compile("claude brainstorm, codex implement, kimi cross-check, r
 - Create: `crates/orc-core/src/invoke/claude.rs`
 - Create: `crates/orc-core/src/invoke/codex.rs`
 - Test: inline `#[cfg(test)]`
-- Reference: `~/ios/orc/internal/invoke/invoke.go`
+- Reference: `internal/invoke/invoke.go`
 
 Port `invoke.Execute()` / `invoke.ExecuteStream()` from Go. Each provider builds subprocess args and decodes JSONL → `StreamEvent`.
 
@@ -952,26 +952,26 @@ This is the most complex widget. Reference codex's use of `utils/pty` crate for 
 ### Task 19: Gemini parser
 
 **Files:** `crates/orc-core/src/session/gemini.rs`
-Reference: `~/ios/cli-continues/src/parsers/gemini.ts`
+Reference: `https://github.com/yigitkonur/cli-continues/blob/main/src/parsers/gemini.ts`
 JSON files under `~/.gemini/tmp/*/chats/`.
 
 ### Task 20: Copilot parser
 
 **Files:** `crates/orc-core/src/session/copilot.rs`
-Reference: `~/ios/cli-continues/src/parsers/copilot.ts`
+Reference: `https://github.com/yigitkonur/cli-continues/blob/main/src/parsers/copilot.ts`
 YAML workspace + JSONL events under `~/.copilot/session-state/`.
 Add `serde_yaml` dependency.
 
 ### Task 21: OpenCode parser
 
 **Files:** `crates/orc-core/src/session/opencode.rs`
-Reference: `~/ios/cli-continues/src/parsers/opencode.ts`
+Reference: `https://github.com/yigitkonur/cli-continues/blob/main/src/parsers/opencode.ts`
 SQLite DB at `~/.local/share/opencode/opencode.db`. Add `rusqlite` dependency.
 
 ### Task 22: Kimi, Amp, Droid parsers
 
 **Files:** `crates/orc-core/src/session/kimi.rs`, `amp.rs`, `droid.rs`
-Reference: `~/ios/cli-continues/src/parsers/droid.ts` for Droid.
+Reference: `https://github.com/yigitkonur/cli-continues/blob/main/src/parsers/droid.ts` for Droid.
 
 ---
 
