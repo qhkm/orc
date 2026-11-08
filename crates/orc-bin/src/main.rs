@@ -5,13 +5,16 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "orc",
-    about = "Conversational coding shell with smart model routing"
+    about = "Get a coding task done by whichever coding agent is best and available: route, run, verify, hand off",
+    after_help = "Exit codes for `orc run`: 0 pass, 1 fail, 2 stuck, 3 rate-limited, 4 orc error (including bad arguments)."
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 }
 
+// `Run` carries many flags; the enum is built once at startup, so its size doesn't matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
     /// Open the TUI session hub
@@ -144,8 +147,28 @@ enum ProvidersCommands {
     Doctor,
 }
 
+/// Exit code for orc's own errors. Must not collide with `orc run` verdicts
+/// (0 pass, 1 fail, 2 stuck, 3 limit) — clap's default for usage errors is 2.
+const EXIT_ORC_ERROR: i32 = 4;
+
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    // Rust ignores SIGPIPE, so `orc list | head` would panic on "Broken pipe".
+    // Restore the default so orc exits quietly when the reader closes, like other CLI tools.
+    #[cfg(unix)]
+    // SAFETY: called once at startup before any threads exist; only resets a signal disposition.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        // --help / --version are reported as "errors" by clap but go to stdout with exit 0.
+        Err(e) if !e.use_stderr() => e.exit(),
+        Err(e) => {
+            let _ = e.print();
+            std::process::exit(EXIT_ORC_ERROR);
+        }
+    };
 
     match cli.command {
         None => {
@@ -205,7 +228,7 @@ fn main() -> anyhow::Result<()> {
                 Ok(code) => std::process::exit(code),
                 Err(e) => {
                     eprintln!("orc run: {e:#}");
-                    std::process::exit(4);
+                    std::process::exit(EXIT_ORC_ERROR);
                 }
             }
         }
@@ -359,8 +382,8 @@ fn cmd_list(format: Option<&str>, tool: Option<&str>) -> anyhow::Result<()> {
         _ => {
             // Plain text table
             println!(
-                "{:<10} {:<10} {:<30} {:<12} {}",
-                "TOOL", "ID", "CWD", "WHEN", "SUMMARY"
+                "{:<10} {:<10} {:<30} {:<12} SUMMARY",
+                "TOOL", "ID", "CWD", "WHEN"
             );
             println!("{}", "-".repeat(80));
             for session in sessions {
@@ -462,7 +485,7 @@ fn cmd_export(id: &str, output: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_import(file: &PathBuf, target_tool: &str) -> anyhow::Result<()> {
+fn cmd_import(file: &std::path::Path, target_tool: &str) -> anyhow::Result<()> {
     use orc_core::invoke::resume::{build_cross_tool_command, spawn_and_exit};
     use orc_core::session::handoff::generate_handoff_markdown;
     use orc_core::session::scp::read_scp;
@@ -820,25 +843,10 @@ fn cmd_init() -> anyhow::Result<()> {
 
     for provider in &providers {
         let report = provider.detect();
-        let status = if report.auth_ok {
-            AuthStatus::LoggedIn
-        } else if report.installed {
-            AuthStatus::LoggedOut
-        } else {
-            AuthStatus::Unknown
-        };
-
-        let label = if report.installed {
-            "installed"
-        } else {
-            "not found"
-        };
-        let auth_label = if report.auth_ok {
-            "authenticated"
-        } else {
-            "not authenticated"
-        };
-        println!("  {} -> {} / {}", report.name, label, auth_label);
+        // Only installation is detected; sign-in is not checked, so don't claim it.
+        let status = AuthStatus::Unknown;
+        let label = if report.installed { "installed" } else { "not found" };
+        println!("  {} -> {}", report.name, label);
 
         if report.installed && master_provider.is_empty() {
             master_provider = report.name.clone();
@@ -873,7 +881,7 @@ fn cmd_init() -> anyhow::Result<()> {
 fn cmd_providers_doctor() -> anyhow::Result<()> {
     use orc_core::invoke::providers::{all_providers, get_provider};
 
-    println!("{:<10} {:<10} {:<6} {:<9} {}", "PROVIDER", "STATUS", "RUNS", "REVIEWER", "BINARY PATH");
+    println!("{:<10} {:<10} {:<6} {:<9} BINARY PATH", "PROVIDER", "STATUS", "RUNS", "REVIEWER");
     println!("{}", "-".repeat(78));
     for name in all_providers() {
         let Some(provider) = get_provider(name) else { continue };
@@ -887,18 +895,16 @@ fn cmd_providers_doctor() -> anyhow::Result<()> {
             report.binary_path.as_deref().unwrap_or("-"),
         );
     }
-    // Session history is read for these, but they can't run `orc run` tasks yet.
-    for name in ["droid"] {
-        let path = which_binary(name);
-        println!(
-            "{:<10} {:<10} {:<6} {:<9} {}",
-            name,
-            if path.is_some() { "installed" } else { "missing" },
-            "no",
-            "no",
-            path.as_deref().unwrap_or("-"),
-        );
-    }
+    // Droid: session history is read, but it can't run `orc run` tasks yet.
+    let droid = which_binary("droid");
+    println!(
+        "{:<10} {:<10} {:<6} {:<9} {}",
+        "droid",
+        if droid.is_some() { "installed" } else { "missing" },
+        "no",
+        "no",
+        droid.as_deref().unwrap_or("-"),
+    );
     println!("\nRUNS: can do `orc run` tasks. REVIEWER: enforces read-only, so it can judge --accept.");
     println!("Sign-in is not checked here; an attempt with a signed-out CLI fails and orc hands off.");
     Ok(())

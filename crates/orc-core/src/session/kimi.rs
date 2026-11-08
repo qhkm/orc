@@ -188,7 +188,7 @@ pub async fn discover_kimi_sessions_in(root: &Path) -> Vec<UnifiedSession> {
         }
     }
 
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at)); // newest first
     sessions
 }
 
@@ -230,10 +230,8 @@ mod tests {
     fn test_kimi_basic_parse_flat() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("session-abc.jsonl");
-        let lines = vec![
-            r#"{"role":"user","content":"implement the login flow"}"#,
-            r#"{"role":"assistant","content":"Sure, here is the login flow."}"#,
-        ];
+        let lines = [r#"{"role":"user","content":"implement the login flow"}"#,
+            r#"{"role":"assistant","content":"Sure, here is the login flow."}"#];
         fs::write(&file, lines.join("\n")).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -255,12 +253,10 @@ mod tests {
     fn test_kimi_message_count_flat() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("session-count.jsonl");
-        let lines = vec![
-            r#"{"role":"user","content":"Turn 1"}"#,
+        let lines = [r#"{"role":"user","content":"Turn 1"}"#,
             r#"{"role":"assistant","content":"Turn 2"}"#,
             r#"{"role":"user","content":"Turn 3"}"#,
-            r#"{"role":"assistant","content":"Turn 4"}"#,
-        ];
+            r#"{"role":"assistant","content":"Turn 4"}"#];
         fs::write(&file, lines.join("\n")).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -281,10 +277,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let session_dir = tmp.path().join("session-dir-001");
         fs::create_dir_all(&session_dir).unwrap();
-        let lines = vec![
-            r#"{"role":"user","content":"add rate limiting"}"#,
-            r#"{"role":"model","content":"I'll add rate limiting."}"#,
-        ];
+        let lines = [r#"{"role":"user","content":"add rate limiting"}"#,
+            r#"{"role":"model","content":"I'll add rate limiting."}"#];
         fs::write(session_dir.join("history.jsonl"), lines.join("\n")).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -307,11 +301,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let session_dir = tmp.path().join("session-dir-count");
         fs::create_dir_all(&session_dir).unwrap();
-        let lines = vec![
-            r#"{"role":"user","content":"Q1"}"#,
+        let lines = [r#"{"role":"user","content":"Q1"}"#,
             r#"{"role":"model","content":"A1"}"#,
-            r#"{"role":"user","content":"Q2"}"#,
-        ];
+            r#"{"role":"user","content":"Q2"}"#];
         fs::write(session_dir.join("history.jsonl"), lines.join("\n")).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -331,10 +323,8 @@ mod tests {
     fn test_kimi_model_role_counted() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("session-model.jsonl");
-        let lines = vec![
-            r#"{"role":"user","content":"ask kimi something"}"#,
-            r#"{"role":"model","content":"kimi reply"}"#,
-        ];
+        let lines = [r#"{"role":"user","content":"ask kimi something"}"#,
+            r#"{"role":"model","content":"kimi reply"}"#];
         fs::write(&file, lines.join("\n")).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();

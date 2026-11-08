@@ -154,7 +154,7 @@ pub async fn discover_claude_sessions_in(root: &Path) -> Result<Vec<UnifiedSessi
         }
     }
 
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at)); // newest first
     Ok(sessions)
 }
 
@@ -232,11 +232,11 @@ fn parse_session_file(file_path: &Path) -> Result<UnifiedSession> {
     let meta = std::fs::metadata(file_path)?;
     let updated_at = meta
         .modified()
-        .map(|t| DateTime::<Utc>::from(t))
+        .map(DateTime::<Utc>::from)
         .unwrap_or_else(|_| Utc::now());
     let created_at = meta
         .created()
-        .map(|t| DateTime::<Utc>::from(t))
+        .map(DateTime::<Utc>::from)
         .unwrap_or(updated_at);
 
     Ok(UnifiedSession {
@@ -276,12 +276,10 @@ mod tests {
         // Use a valid UUID filename
         let session_file =
             project_dir.join("abc12345-0000-0000-0000-000000000001.jsonl");
-        let lines = vec![
-            r#"{"type":"user","uuid":"u1","timestamp":"2026-02-20T10:00:00Z","sessionId":"abc12345-0000-0000-0000-000000000001","cwd":"/Users/me/project","gitBranch":"main","message":{"role":"user","content":"Fix the auth bug"}}"#,
+        let lines = [r#"{"type":"user","uuid":"u1","timestamp":"2026-02-20T10:00:00Z","sessionId":"abc12345-0000-0000-0000-000000000001","cwd":"/Users/me/project","gitBranch":"main","message":{"role":"user","content":"Fix the auth bug"}}"#,
             r#"{"type":"assistant","uuid":"u2","timestamp":"2026-02-20T10:01:00Z","message":{"role":"assistant","content":"I'll fix that."}}"#,
             r#"{"type":"user","uuid":"u3","timestamp":"2026-02-20T10:02:00Z","message":{"role":"user","content":"Now add tests"}}"#,
-            r#"{"type":"assistant","uuid":"u4","timestamp":"2026-02-20T10:03:00Z","message":{"role":"assistant","content":"Done, tests added."}}"#,
-        ];
+            r#"{"type":"assistant","uuid":"u4","timestamp":"2026-02-20T10:03:00Z","message":{"role":"assistant","content":"Done, tests added."}}"#];
         fs::write(&session_file, lines.join("\n")).unwrap();
         dir.to_path_buf()
     }
@@ -338,7 +336,7 @@ mod tests {
         fs::create_dir_all(&project_dir).unwrap();
         let session_file =
             project_dir.join("deadbeef-1111-1111-1111-aabbccddeeff.jsonl");
-        let lines = vec![
+        let lines = [
             // first user message starts with '/' — should be skipped
             r#"{"type":"user","uuid":"u1","sessionId":"deadbeef-1111-1111-1111-aabbccddeeff","cwd":"/tmp","message":{"role":"user","content":"/help"}}"#,
             // second user message is normal — should be picked up

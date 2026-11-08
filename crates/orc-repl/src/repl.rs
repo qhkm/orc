@@ -713,6 +713,8 @@ enum SlashEffect {
     Exit,
 }
 
+// Takes the REPL's live pieces individually; grouping them is a larger REPL refactor.
+#[allow(clippy::too_many_arguments)]
 fn handle_slash_command(
     command: SlashCommand,
     state: &mut ReplState,

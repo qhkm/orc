@@ -240,7 +240,7 @@ fn min_distance_between_terms(text: &str, first: &str, second: &str) -> Option<u
     let mut best: Option<usize> = None;
     for &a in &first_positions {
         for &b in &second_positions {
-            let distance = if a > b { a - b } else { b - a };
+            let distance = a.abs_diff(b);
             match best {
                 None => best = Some(distance),
                 Some(prev) if distance < prev => best = Some(distance),

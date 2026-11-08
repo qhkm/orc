@@ -115,7 +115,7 @@ pub async fn build_index_full(
     all.extend(amp_sessions);
     all.extend(droid_sessions);
 
-    all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    all.sort_by_key(|s| std::cmp::Reverse(s.updated_at)); // newest first
 
     Ok(SessionIndex {
         sessions: all,
@@ -184,10 +184,8 @@ mod tests {
         let project_dir = dir.join("claude_root").join("-Users-me-project");
         fs::create_dir_all(&project_dir).unwrap();
         let session_file = project_dir.join("abc12345-0000-0000-0000-000000000001.jsonl");
-        let lines = vec![
-            r#"{"type":"user","uuid":"u1","timestamp":"2026-02-20T10:00:00Z","sessionId":"abc12345-0000-0000-0000-000000000001","cwd":"/Users/me/project","message":{"role":"user","content":"Claude task"}}"#,
-            r#"{"type":"assistant","uuid":"u2","timestamp":"2026-02-20T10:01:00Z","message":{"role":"assistant","content":"Done."}}"#,
-        ];
+        let lines = [r#"{"type":"user","uuid":"u1","timestamp":"2026-02-20T10:00:00Z","sessionId":"abc12345-0000-0000-0000-000000000001","cwd":"/Users/me/project","message":{"role":"user","content":"Claude task"}}"#,
+            r#"{"type":"assistant","uuid":"u2","timestamp":"2026-02-20T10:01:00Z","message":{"role":"assistant","content":"Done."}}"#];
         fs::write(&session_file, lines.join("\n")).unwrap();
     }
 
@@ -195,11 +193,9 @@ mod tests {
         let codex_root = dir.join("codex_root");
         fs::create_dir_all(&codex_root).unwrap();
         let session_file = codex_root.join("rollout-xyz789abc.jsonl");
-        let lines = vec![
-            r#"{"timestamp":"2026-02-19T10:00:00Z","type":"session_meta","payload":{"id":"ses_xyz789","cwd":"/Users/me/project2","git":{"branch":"dev"}}}"#,
+        let lines = [r#"{"timestamp":"2026-02-19T10:00:00Z","type":"session_meta","payload":{"id":"ses_xyz789","cwd":"/Users/me/project2","git":{"branch":"dev"}}}"#,
             r#"{"timestamp":"2026-02-19T10:01:00Z","type":"event_msg","payload":{"role":"user","content":[{"type":"input_text","text":"Codex task"}]}}"#,
-            r#"{"timestamp":"2026-02-19T10:02:00Z","type":"event_msg","payload":{"role":"assistant","content":[{"type":"output_text","text":"Done."}]}}"#,
-        ];
+            r#"{"timestamp":"2026-02-19T10:02:00Z","type":"event_msg","payload":{"role":"assistant","content":[{"type":"output_text","text":"Done."}]}}"#];
         fs::write(&session_file, lines.join("\n")).unwrap();
     }
 

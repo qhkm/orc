@@ -252,10 +252,7 @@ impl EmbeddedState {
         // Also check if the child has exited (non-blocking).
         if self.is_running {
             if let Some(child) = &mut self.child {
-                match child.try_wait() {
-                    Ok(Some(_)) => self.is_running = false,
-                    _ => {}
-                }
+                if let Ok(Some(_)) = child.try_wait() { self.is_running = false }
             }
         }
     }

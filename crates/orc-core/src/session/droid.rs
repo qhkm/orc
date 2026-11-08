@@ -233,7 +233,7 @@ pub async fn discover_droid_sessions_in(root: &Path) -> Vec<UnifiedSession> {
         }
     }
 
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at)); // newest first
     sessions
 }
 

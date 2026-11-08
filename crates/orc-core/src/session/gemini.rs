@@ -237,7 +237,7 @@ fn derive_session_dir(file_path: &Path) -> String {
 /// Returns `true` for `.json` files inside a `chats/` subdirectory,
 /// OR for `logs.json` files directly under a session-dir.
 fn is_gemini_session_file(path: &Path) -> bool {
-    if !path.extension().and_then(|e| e.to_str()).is_some_and(|e| e == "json") {
+    if path.extension().and_then(|e| e.to_str()).is_none_or(|e| e != "json") {
         return false;
     }
     let parent_name = path
@@ -292,7 +292,7 @@ pub async fn discover_gemini_sessions_in(root: &Path) -> Vec<UnifiedSession> {
         }
     }
 
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at)); // newest first
     sessions
 }
 

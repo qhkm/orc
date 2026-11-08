@@ -48,7 +48,7 @@ impl<'a> Widget for PtyScreenWidget<'a> {
 
                     let c = if ch.is_empty() { " " } else { &ch };
                     if let Some(first_char) = c.chars().next() {
-                        buf.set_string(buf_x, buf_y, &first_char.to_string(), style);
+                        buf.set_string(buf_x, buf_y, first_char.to_string(), style);
                     }
                 }
             }

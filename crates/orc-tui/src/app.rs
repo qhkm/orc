@@ -135,6 +135,12 @@ pub struct App {
     pub status_msg: String,
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         // Load sessions synchronously using a temporary single-threaded runtime.
@@ -293,8 +299,8 @@ impl App {
                                             self.cross_tool_targets.clear();
                                             self.cross_tool_selected = 0;
                                         }
-                                        KeyCode::Up | KeyCode::Char('k') => {
-                                            if !self.cross_tool_targets.is_empty() {
+                                        KeyCode::Up | KeyCode::Char('k')
+                                            if !self.cross_tool_targets.is_empty() => {
                                                 if self.cross_tool_selected == 0 {
                                                     self.cross_tool_selected =
                                                         self.cross_tool_targets.len() - 1;
@@ -302,14 +308,12 @@ impl App {
                                                     self.cross_tool_selected -= 1;
                                                 }
                                             }
-                                        }
-                                        KeyCode::Down | KeyCode::Char('j') => {
-                                            if !self.cross_tool_targets.is_empty() {
+                                        KeyCode::Down | KeyCode::Char('j')
+                                            if !self.cross_tool_targets.is_empty() => {
                                                 self.cross_tool_selected = (self.cross_tool_selected
                                                     + 1)
                                                     % self.cross_tool_targets.len();
                                             }
-                                        }
                                         KeyCode::Enter => {
                                             if let Some(&target) = self
                                                 .cross_tool_targets
@@ -765,8 +769,7 @@ mod tests {
         use chrono::Utc;
 
         let cwd = PathBuf::from("/my/project");
-        let sessions = vec![
-            UnifiedSession {
+        let sessions = [UnifiedSession {
                 id: "aaa".to_string(),
                 source: SessionSource::Claude,
                 cwd: PathBuf::from("/my/project"),
@@ -789,8 +792,7 @@ mod tests {
                 created_at: Utc::now(),
                 message_count: 0,
                 original_path: PathBuf::from("/tmp/b.jsonl"),
-            },
-        ];
+            }];
         let count = sessions.iter().filter(|s| s.cwd == cwd).count();
         assert_eq!(count, 1);
     }

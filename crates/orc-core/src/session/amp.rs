@@ -189,7 +189,7 @@ pub async fn discover_amp_sessions_in(root: &Path) -> Vec<UnifiedSession> {
         }
     }
 
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at)); // newest first
     sessions
 }
 
@@ -241,10 +241,8 @@ mod tests {
     fn test_amp_basic_parse_jsonl() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("session-amp-001.jsonl");
-        let lines = vec![
-            r#"{"role":"user","content":"refactor the auth service"}"#,
-            r#"{"role":"assistant","content":"I'll refactor it."}"#,
-        ];
+        let lines = [r#"{"role":"user","content":"refactor the auth service"}"#,
+            r#"{"role":"assistant","content":"I'll refactor it."}"#];
         fs::write(&file, lines.join("\n")).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -266,13 +264,11 @@ mod tests {
     fn test_amp_message_count() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("session-count.jsonl");
-        let lines = vec![
-            r#"{"role":"user","content":"Turn 1"}"#,
+        let lines = [r#"{"role":"user","content":"Turn 1"}"#,
             r#"{"role":"assistant","content":"Turn 2"}"#,
             r#"{"role":"user","content":"Turn 3"}"#,
             r#"{"role":"assistant","content":"Turn 4"}"#,
-            r#"{"role":"user","content":"Turn 5"}"#,
-        ];
+            r#"{"role":"user","content":"Turn 5"}"#];
         fs::write(&file, lines.join("\n")).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();

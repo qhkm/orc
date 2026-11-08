@@ -215,7 +215,7 @@ pub async fn discover_copilot_sessions_in(root: &Path) -> Vec<UnifiedSession> {
         }
     }
 
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at)); // newest first
     sessions
 }
 
@@ -257,10 +257,8 @@ mod tests {
     fn test_copilot_jsonl_parse() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("abc-session-001.jsonl");
-        let lines = vec![
-            r#"{"role":"user","content":"add auth middleware"}"#,
-            r#"{"role":"assistant","content":"I'll create the middleware."}"#,
-        ];
+        let lines = [r#"{"role":"user","content":"add auth middleware"}"#,
+            r#"{"role":"assistant","content":"I'll create the middleware."}"#];
         fs::write(&file, lines.join("\n")).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -306,12 +304,10 @@ mod tests {
     fn test_copilot_message_count() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("session-count.jsonl");
-        let lines = vec![
-            r#"{"role":"user","content":"Turn 1"}"#,
+        let lines = [r#"{"role":"user","content":"Turn 1"}"#,
             r#"{"role":"assistant","content":"Turn 2"}"#,
             r#"{"role":"user","content":"Turn 3"}"#,
-            r#"{"role":"assistant","content":"Turn 4"}"#,
-        ];
+            r#"{"role":"assistant","content":"Turn 4"}"#];
         fs::write(&file, lines.join("\n")).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -360,10 +356,8 @@ mod tests {
     fn test_copilot_cwd_from_message() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("session-cwd.jsonl");
-        let lines = vec![
-            r#"{"role":"user","content":"fix the bug","cwd":"/Users/me/myproject"}"#,
-            r#"{"role":"assistant","content":"Done."}"#,
-        ];
+        let lines = [r#"{"role":"user","content":"fix the bug","cwd":"/Users/me/myproject"}"#,
+            r#"{"role":"assistant","content":"Done."}"#];
         fs::write(&file, lines.join("\n")).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -379,9 +373,7 @@ mod tests {
     fn test_copilot_working_directory_field() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("session-wd.jsonl");
-        let lines = vec![
-            r#"{"role":"user","content":"add tests","workingDirectory":"/home/dev/repo"}"#,
-        ];
+        let lines = [r#"{"role":"user","content":"add tests","workingDirectory":"/home/dev/repo"}"#];
         fs::write(&file, lines.join("\n")).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -431,9 +423,7 @@ mod tests {
     fn test_copilot_only_assistant_messages() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("session-asst.jsonl");
-        let lines = vec![
-            r#"{"role":"assistant","content":"Hello there."}"#,
-        ];
+        let lines = [r#"{"role":"assistant","content":"Hello there."}"#];
         fs::write(&file, lines.join("\n")).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();

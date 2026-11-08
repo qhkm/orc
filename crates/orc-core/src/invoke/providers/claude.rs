@@ -157,11 +157,7 @@ impl Provider for ClaudeProvider {
                 Some(StreamEvent::Done)
             }
             "system" => {
-                if let Some(msg) = val.get("subtype").and_then(|s| s.as_str()) {
-                    Some(StreamEvent::Status { message: msg.to_string() })
-                } else {
-                    None
-                }
+                val.get("subtype").and_then(|s| s.as_str()).map(|msg| StreamEvent::Status { message: msg.to_string() })
             }
             _ => None,
         }

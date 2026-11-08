@@ -220,7 +220,7 @@ pub fn discover_codex_sessions_in(root: &Path) -> Result<Vec<UnifiedSession>> {
         }
     }
 
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at)); // newest first
     Ok(sessions)
 }
 
