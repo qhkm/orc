@@ -2,7 +2,8 @@ use regex::Regex;
 use std::sync::OnceLock;
 
 /// Rate-limit / quota wording seen from agent CLIs (Codex, Claude Code, Gemini, OpenAI/Anthropic APIs).
-const LIMIT_PATTERN: &str = r"(?i)(usage limit|rate[ _-]?limit|quota|too many requests|\b429\b|credit balance is too low|limit reached|hit your limit|resource[_ ]exhausted)";
+/// A bare `429` is not enough: stack traces contain line numbers like `oauth2client.js:429:18`.
+const LIMIT_PATTERN: &str = r"(?i)(usage limit|rate[ _-]?limit|quota|too many requests|(status|code|error|http)\W{0,3}429\b|credit balance is too low|limit reached|hit your limit|resource[_ ]exhausted)";
 
 fn pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -41,6 +42,8 @@ mod tests {
             "Claude AI usage limit reached|1762700000",
             "5-hour limit reached ∙ resets 3pm",
             "Error: 429 Too Many Requests",
+            "Request failed with status code 429",
+            "Error code: 429 - {'error': {'type': 'rate_limit_reached_error'}}",
             "RESOURCE_EXHAUSTED: Quota exceeded for quota metric",
             "rate_limit_error: Number of request tokens has exceeded your per-minute rate limit",
             "Your credit balance is too low to access the Anthropic API",
@@ -60,5 +63,13 @@ mod tests {
         assert!(detect_limit("error[E0425]: cannot find value `x`\ntest result: FAILED", &["error_max_turns".into()]).is_none());
         assert!(detect_limit("", &[]).is_none());
         assert!(detect_limit("listening on port 4290", &[]).is_none());
+    }
+
+    /// Real gemini-cli 0.1.4 stderr (SUBSCRIPTION_REQUIRED) on 2026-11-08: an auth/licence
+    /// failure, not a rate limit, despite the line number 429 in its stack trace.
+    #[test]
+    fn stack_trace_line_numbers_are_not_rate_limits() {
+        let stderr = "    at async OAuth2Client.requestAsync (/Users/x/.volta/tools/image/packages/@google/gemini-cli/node_modules/google-auth-library/build/src/auth/oauth2client.js:429:18)\n        \"reason\": \"SUBSCRIPTION_REQUIRED\",";
+        assert_eq!(detect_limit(stderr, &[]), None);
     }
 }

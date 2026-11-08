@@ -61,7 +61,22 @@ The next agent gets the original task plus a handoff brief: the verdict, its evi
 - `--max-attempts N` (default 3). The exit code is the final attempt's verdict.
 - `--model` applies to the first provider only, since model names differ per CLI.
 
-`--json` prints the full report with every attempt. Every step, including each handoff, is logged to `.orc/runs/<run_id>/events.jsonl`. `orc run` currently supports `claude` and `codex` as agents and reviewers.
+`--json` prints the full report with every attempt. Every step, including each handoff, is logged to `.orc/runs/<run_id>/events.jsonl`.
+
+### Supported agents
+
+| Provider | Runs as | Reviewer | Notes |
+|---|---|---|---|
+| `claude` | `claude -p --output-format stream-json --verbose` | ✓ (Read/Grep/Glob only) | |
+| `codex` | `codex exec --json --sandbox workspace-write` | ✓ (read-only sandbox) | |
+| `opencode` | `opencode run --format json --auto` | ✓ (`--agent plan`) | `--model provider/model`, so it also runs DeepSeek, Qwen, local and other models |
+| `pi` | `pi --print --mode json` | ✓ (`--no-tools`) | needs a provider/API key configured |
+| `kimi` | `kimi --print --output-format stream-json --yolo` | | prints errors as plain text with exit 0; orc treats them as errors |
+| `amp` | `amp --execute … --stream-json --dangerously-allow-all` | | `--model` is passed as amp's `--mode` |
+| `gemini` | `gemini --yolo --prompt …` | | plain-text output (Gemini CLI 0.1.x has no JSON mode) |
+| `copilot` | `copilot --prompt … --silent --allow-all-tools` | | plain-text output; pass `--model` if the default isn't on your plan |
+
+A reviewer must enforce read-only itself, so only the four marked can judge `--accept`. `orc providers doctor` shows which are installed. Sign-in isn't checked up front: an attempt with a signed-out or out-of-quota CLI fails, and orc hands off to the next one.
 
 ## Use
 

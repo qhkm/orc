@@ -55,4 +55,28 @@ pub trait Provider: Send + Sync {
 
     /// Check if this provider is installed and authenticated
     fn detect(&self) -> DoctorReport;
+
+    /// Whether `InvokeOpts::read_only` is enforced by the CLI itself.
+    /// Only such providers may act as reviewers.
+    fn supports_read_only(&self) -> bool {
+        false
+    }
+}
+
+/// Doctor report for a CLI that is only checked for being on PATH.
+pub fn detect_binary(name: &str, binary: &str) -> DoctorReport {
+    let path = std::process::Command::new("which")
+        .arg(binary)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    DoctorReport {
+        name: name.to_string(),
+        installed: path.is_some(),
+        binary_path: path.clone(),
+        // Sign-in is not checked; `orc run` reports auth failures as a failed attempt.
+        auth_ok: path.is_some(),
+        error: None,
+    }
 }

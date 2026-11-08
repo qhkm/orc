@@ -138,12 +138,16 @@ impl Provider for ClaudeProvider {
             // the process exits right after, which ends the stream.
             "result" => {
                 if val.get("is_error").and_then(|e| e.as_bool()) == Some(true) {
+                    // Claude puts the message in `result`; amp (same format) in `error`.
+                    let error = val.get("error");
                     let message = val
                         .get("result")
                         .and_then(|r| r.as_str())
                         .filter(|s| !s.is_empty())
+                        .or_else(|| error.and_then(|e| e.as_str()))
+                        .or_else(|| error.and_then(|e| e.get("message")).and_then(|m| m.as_str()))
                         .or_else(|| val.get("subtype").and_then(|s| s.as_str()))
-                        .unwrap_or("claude reported an error");
+                        .unwrap_or("agent reported an error");
                     return Some(StreamEvent::Error { message: message.to_string() });
                 }
                 Some(StreamEvent::Done)
@@ -159,20 +163,12 @@ impl Provider for ClaudeProvider {
         }
     }
 
-    fn detect(&self) -> DoctorReport {
-        let installed = std::process::Command::new("which")
-            .arg("claude")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+    fn supports_read_only(&self) -> bool {
+        true
+    }
 
-        DoctorReport {
-            name: "claude".to_string(),
-            installed,
-            binary_path: None,
-            auth_ok: installed, // simplified
-            error: None,
-        }
+    fn detect(&self) -> DoctorReport {
+        crate::invoke::provider::detect_binary("claude", "claude")
     }
 }
 

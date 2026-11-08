@@ -542,7 +542,18 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<i32> {
         if name == primary && !args.json {
             eprintln!("note: reviewer is the same provider as the agent ({name}); use --reviewer for an independent check");
         }
-        Some(lookup_provider(&name)?)
+        let reviewer = lookup_provider(&name)?;
+        if !reviewer.supports_read_only() {
+            let ok: Vec<&str> = orc_core::invoke::providers::all_providers()
+                .into_iter()
+                .filter(|n| orc_core::invoke::get_provider(n).is_some_and(|p| p.supports_read_only()))
+                .collect();
+            anyhow::bail!(
+                "'{name}' can't be a reviewer: it has no read-only mode, so it could change the work it judges. Use --reviewer with one of: {}",
+                ok.join(", ")
+            );
+        }
+        Some(reviewer)
     };
 
     let now = chrono::Local::now();
@@ -691,8 +702,7 @@ fn cmd_init() -> anyhow::Result<()> {
     use orc_core::config::{
         default_config_path, load_config, save_config, AuthStatus, Config, ProviderConfig,
     };
-    use orc_core::invoke::provider::Provider;
-    use orc_core::invoke::providers::{ClaudeProvider, CodexProvider};
+    use orc_core::invoke::providers::{all_providers, get_provider};
 
     let config_path = default_config_path()?;
 
@@ -708,10 +718,11 @@ fn cmd_init() -> anyhow::Result<()> {
     println!("Initializing orc config...");
 
     // Run doctor on known providers
-    let providers: Vec<Box<dyn Provider>> = vec![Box::new(ClaudeProvider), Box::new(CodexProvider)];
+    let providers: Vec<_> = all_providers().into_iter().filter_map(get_provider).collect();
 
     let mut provider_configs = Vec::new();
-    let mut master_provider = String::from("claude");
+    // The first installed provider (in all_providers order) becomes the master.
+    let mut master_provider = String::new();
 
     for provider in &providers {
         let report = provider.detect();
@@ -747,6 +758,9 @@ fn cmd_init() -> anyhow::Result<()> {
         });
     }
 
+    if master_provider.is_empty() {
+        master_provider = "claude".to_string();
+    }
     let now = chrono::Utc::now();
     let cfg = Config {
         master_provider,
@@ -763,60 +777,36 @@ fn cmd_init() -> anyhow::Result<()> {
 }
 
 fn cmd_providers_doctor() -> anyhow::Result<()> {
-    use orc_core::invoke::provider::Provider;
-    use orc_core::invoke::providers::{ClaudeProvider, CodexProvider};
+    use orc_core::invoke::providers::{all_providers, get_provider};
 
-    let providers: Vec<(&str, Box<dyn Provider>)> = vec![
-        ("claude", Box::new(ClaudeProvider)),
-        ("codex", Box::new(CodexProvider)),
-    ];
-
-    // Also check additional providers by binary detection
-    let extra_binaries = ["gemini", "copilot", "opencode", "kimi", "amp", "droid"];
-
-    println!(
-        "{:<12} {:<12} {:<30} {}",
-        "PROVIDER", "STATUS", "BINARY PATH", "AUTH"
-    );
-    println!("{}", "-".repeat(70));
-
-    for (name, provider) in &providers {
+    println!("{:<10} {:<10} {:<6} {:<9} {}", "PROVIDER", "STATUS", "RUNS", "REVIEWER", "BINARY PATH");
+    println!("{}", "-".repeat(78));
+    for name in all_providers() {
+        let Some(provider) = get_provider(name) else { continue };
         let report = provider.detect();
-        let status = if report.installed {
-            "installed"
-        } else {
-            "missing"
-        };
-        let path = report.binary_path.as_deref().unwrap_or("-");
-        let auth = if report.auth_ok {
-            "ok"
-        } else if report.installed {
-            "not authenticated"
-        } else {
-            "-"
-        };
-        let error_note = report
-            .error
-            .as_deref()
-            .map(|e| format!(" ({})", e))
-            .unwrap_or_default();
         println!(
-            "{:<12} {:<12} {:<30} {}{}",
-            name, status, path, auth, error_note
+            "{:<10} {:<10} {:<6} {:<9} {}",
+            name,
+            if report.installed { "installed" } else { "missing" },
+            "yes",
+            if provider.supports_read_only() { "yes" } else { "no" },
+            report.binary_path.as_deref().unwrap_or("-"),
         );
     }
-
-    // Extra providers: just check if binary is on PATH
-    for name in &extra_binaries {
+    // Session history is read for these, but they can't run `orc run` tasks yet.
+    for name in ["droid"] {
         let path = which_binary(name);
-        let (status, path_str, auth) = if let Some(p) = &path {
-            ("installed", p.as_str(), "unknown")
-        } else {
-            ("missing", "-", "-")
-        };
-        println!("{:<12} {:<12} {:<30} {}", name, status, path_str, auth);
+        println!(
+            "{:<10} {:<10} {:<6} {:<9} {}",
+            name,
+            if path.is_some() { "installed" } else { "missing" },
+            "no",
+            "no",
+            path.as_deref().unwrap_or("-"),
+        );
     }
-
+    println!("\nRUNS: can do `orc run` tasks. REVIEWER: enforces read-only, so it can judge --accept.");
+    println!("Sign-in is not checked here; an attempt with a signed-out CLI fails and orc hands off.");
     Ok(())
 }
 

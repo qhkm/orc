@@ -98,20 +98,12 @@ impl Provider for CodexProvider {
         }
     }
 
-    fn detect(&self) -> DoctorReport {
-        let installed = std::process::Command::new("which")
-            .arg("codex")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+    fn supports_read_only(&self) -> bool {
+        true
+    }
 
-        DoctorReport {
-            name: "codex".to_string(),
-            installed,
-            binary_path: None,
-            auth_ok: installed,
-            error: None,
-        }
+    fn detect(&self) -> DoctorReport {
+        crate::invoke::provider::detect_binary("codex", "codex")
     }
 }
 
