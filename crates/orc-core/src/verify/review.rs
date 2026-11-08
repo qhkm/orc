@@ -37,6 +37,9 @@ pub fn build_review_prompt(task: &str, criteria: &[String], diff: &str, checks: 
         }
     }
     prompt.push_str(&format!("\n## Changes\n\n```diff\n{diff}\n```\n\n"));
+    if crate::redact::has_redactions(diff) {
+        prompt.push_str(&format!("{}\n\n", crate::redact::note()));
+    }
     prompt.push_str(
         "Reply with JSON only, no other text, one entry per criterion id:\n\
          {\"results\": [{\"id\": 1, \"pass\": true, \"reason\": \"<one sentence>\"}]}\n",
@@ -155,6 +158,13 @@ mod tests {
 
     fn req<'a>(criteria: &'a [String], dir: &'a str) -> ReviewRequest<'a> {
         ReviewRequest { task: "task", criteria, diff: "diff", checks: &[], working_dir: dir, model: None, timeout_secs: 30 }
+    }
+
+    #[test]
+    fn prompt_explains_redacted_values_only_when_present() {
+        assert!(!build_review_prompt("t", &criteria(), "+x", &[]).contains("[REDACTED:...]"));
+        let p = build_review_prompt("t", &criteria(), "+KEY=[REDACTED:KEY]", &[]);
+        assert!(p.contains(crate::redact::note()));
     }
 
     #[test]

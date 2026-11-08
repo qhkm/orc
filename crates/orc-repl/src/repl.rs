@@ -204,15 +204,20 @@ fn extract_screen_brief(vterm: &vt100::Parser, max_lines: usize) -> String {
 }
 
 /// Build a handoff prompt that gives the new provider context from the old session.
+/// The screen brief is redacted first: the new provider may be another vendor.
 fn build_handoff_prompt(from_provider: &str, brief: &str, cwd: &str) -> String {
     if brief.is_empty() {
         return String::new();
     }
-
-    format!(
+    let brief = orc_core::redact::Redactor::for_dir(std::path::Path::new(cwd)).clean(brief);
+    let mut prompt = format!(
         "I'm continuing work from a {} session in {}. Here's the context from where I left off:\n\n---\n{}\n---\n\nPlease continue from where the previous session left off.",
         from_provider, cwd, brief
-    )
+    );
+    if orc_core::redact::has_redactions(&brief) {
+        prompt.push_str(&format!(" {}", orc_core::redact::note()));
+    }
+    prompt
 }
 
 /// Send a handoff prompt to the PTY after a short delay to let the provider start up.
@@ -1008,6 +1013,14 @@ mod tests {
         assert!(prompt.contains("claude"));
         assert!(prompt.contains("some context"));
         assert!(prompt.contains("/tmp/project"));
+    }
+
+    #[test]
+    fn handoff_prompt_redacts_secrets_on_screen() {
+        let prompt = build_handoff_prompt("claude", "$ echo $TOKEN\nghp_abcdefghijklmnopqrstuvwxyz0123456789", "/tmp/project");
+        assert!(!prompt.contains("ghp_abcdef"));
+        assert!(prompt.contains("[REDACTED:github-token]"));
+        assert!(prompt.contains(orc_core::redact::note()));
     }
 
     #[test]

@@ -247,7 +247,9 @@ pub fn diff_stat(dir: &Path, base: Option<&str>) -> String {
 }
 
 /// Everything that changed since `base`: committed and uncommitted changes to
-/// tracked files, plus the contents of new untracked files. Truncated to fit a prompt.
+/// tracked files, plus the contents of new untracked files. Secrets are
+/// redacted (before truncation), since the diff goes to the reviewer, which may
+/// be another vendor's agent. Truncated to fit a prompt.
 pub fn collect_diff(dir: &Path, base: Option<&str>) -> String {
     let Some(base) = base else {
         return "(no git history to diff against; inspect the files in the repository directly)".to_string();
@@ -264,6 +266,7 @@ pub fn collect_diff(dir: &Path, base: Option<&str>) -> String {
     if diff.trim().is_empty() {
         return "(no changes since the run started)".to_string();
     }
+    let diff = crate::redact::Redactor::for_dir(dir).clean(&diff);
     if diff.chars().count() > MAX_DIFF_CHARS {
         let cut: String = diff.chars().take(MAX_DIFF_CHARS).collect();
         return format!("{cut}\n… (diff truncated; read the files directly for the rest)");
@@ -435,6 +438,25 @@ mod tests {
         assert!(diff.contains("NEW.md (new, untracked)"));
         assert!(diff.contains("hello new file"));
         assert!(collect_diff(p, None).contains("no git history"));
+    }
+
+    #[test]
+    fn diff_for_the_reviewer_has_secrets_removed() {
+        let dir = repo();
+        let p = dir.path();
+        let base = git_head(p).unwrap();
+        // A value with no known shape, recognised because the project's .env holds it.
+        std::fs::write(p.join(".env"), "SERVICE_AUTH=zz9plural8alpha7\n").unwrap();
+        std::fs::write(
+            p.join("deploy.sh"),
+            "curl -H 'x-auth: zz9plural8alpha7' https://api\nGITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n",
+        )
+        .unwrap();
+        let diff = collect_diff(p, Some(&base));
+        assert!(diff.contains("deploy.sh (new, untracked)"), "{diff}");
+        assert!(!diff.contains("zz9plural8alpha7"), "{diff}");
+        assert!(!diff.contains("ghp_abcdef"), "{diff}");
+        assert!(diff.contains("GITHUB_TOKEN=[REDACTED:"), "{diff}");
     }
 
     #[test]

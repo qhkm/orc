@@ -15,8 +15,10 @@ fn fmt_commas(n: u64) -> String {
 }
 
 /// Generate a structured markdown handoff document from a SessionContext.
+/// Secrets are redacted: the document is pasted into another vendor's CLI.
 pub fn generate_handoff_markdown(ctx: &SessionContext) -> String {
     let session = &ctx.session;
+    let redactor = crate::redact::Redactor::for_dir(&session.cwd);
     let mut md = String::new();
 
     // Header
@@ -133,7 +135,8 @@ pub fn generate_handoff_markdown(ctx: &SessionContext) -> String {
                 Role::Assistant => "**Assistant**",
                 Role::System => "**System**",
             };
-            let content: String = msg.content.chars().take(500).collect();
+            // Redact before cutting, so a cut cannot split a secret past recognition.
+            let content: String = redactor.clean(&msg.content).chars().take(500).collect();
             md.push_str(&format!("### {}\n\n{}\n\n", role_label, content));
         }
     }
@@ -142,6 +145,10 @@ pub fn generate_handoff_markdown(ctx: &SessionContext) -> String {
     md.push_str("---\n\n");
     md.push_str("Pick up from where the previous session left off. Review the context above and continue the work.\n");
 
+    let mut md = redactor.clean(&md);
+    if crate::redact::has_redactions(&md) {
+        md.push_str(&format!("\n{}\n", crate::redact::note()));
+    }
     md
 }
 
@@ -235,6 +242,19 @@ mod tests {
             token_usage: Some(TokenUsage { input: 45230, output: 12847 }),
             markdown: String::new(),
         }
+    }
+
+    #[test]
+    fn handoff_removes_secrets_from_conversation_and_notes() {
+        let mut ctx = make_test_context();
+        let filler = "x ".repeat(240);
+        ctx.messages[0].content = format!("{filler}export OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789");
+        ctx.reasoning_notes.push("db at postgres://app:s3cretPassw0rd@db:5432/app".into());
+        let md = generate_handoff_markdown(&ctx);
+        assert!(!md.contains("sk-proj-abcdef"), "{md}");
+        assert!(!md.contains("s3cretPassw0rd"), "{md}");
+        assert!(md.contains("[REDACTED:"), "{md}");
+        assert!(md.contains(crate::redact::note()));
     }
 
     #[test]

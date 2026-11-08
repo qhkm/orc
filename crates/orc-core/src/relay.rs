@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use crate::capsule::{append_event, capsule_path, CapsuleEvent};
 use crate::invoke::Provider;
+use crate::redact::Redactor;
 use crate::verify::stage::{diff_stat, git_head};
 use crate::verify::{run_stage, Progress, StageReport, StageSpec, Verdict};
 
@@ -68,7 +69,16 @@ pub fn next_provider(verdict: &Verdict, current: usize, count: usize, limited: &
 }
 
 /// The prompt for the next attempt: the original task plus what happened so far.
-pub fn build_handoff_prompt(task: &str, previous: &StageReport, changes: &str, checks: &[String], accept: &[String]) -> String {
+/// Evidence, the agent's reply and the change list go through `redactor`
+/// before truncation: the next provider may belong to another vendor.
+pub fn build_handoff_prompt(
+    task: &str,
+    previous: &StageReport,
+    changes: &str,
+    checks: &[String],
+    accept: &[String],
+    redactor: &Redactor,
+) -> String {
     let evidence = match &previous.verdict {
         Verdict::Fail { evidence, .. } => evidence.clone(),
         Verdict::Limit { message, .. } => message.clone(),
@@ -82,14 +92,15 @@ pub fn build_handoff_prompt(task: &str, previous: &StageReport, changes: &str, c
         previous.provider,
         verdict_summary(&previous.verdict)
     ));
-    let evidence = crate::verify::tail(&evidence, 40, 3000);
+    let evidence = crate::verify::tail(&redactor.clean(&evidence), 40, 3000);
     if !evidence.trim().is_empty() {
         prompt.push_str(&format!("\n**Evidence:**\n\n```\n{evidence}\n```\n"));
     }
-    let said = crate::verify::tail(&previous.agent_response, 20, 1500);
+    let said = crate::verify::tail(&redactor.clean(&previous.agent_response), 20, 1500);
     if !said.trim().is_empty() {
         prompt.push_str(&format!("\n**What {} said it did:**\n\n{said}\n", previous.provider));
     }
+    let changes = redactor.clean(changes);
     prompt.push_str(&format!(
         "\n**Already changed in the repository since the task started:**\n\n```\n{changes}\n```\n"
     ));
@@ -106,6 +117,9 @@ pub fn build_handoff_prompt(task: &str, previous: &StageReport, changes: &str, c
         "\nContinue from the current state of the repository. Keep the previous changes that are \
          correct and fix what is wrong; do not start over unless they are clearly wrong.\n",
     );
+    if crate::redact::has_redactions(&prompt[task.len()..]) {
+        prompt.push_str(&format!("\n{}\n", crate::redact::note()));
+    }
     prompt
 }
 
@@ -124,6 +138,7 @@ pub async fn run_relay(
     let log_path = capsule_path(dir, &spec.run_id);
     // Pin one base for the whole run, so later reviews see every attempt's changes.
     let base_commit = spec.base_commit.clone().or_else(|| git_head(dir));
+    let redactor = Redactor::for_dir(dir);
 
     let mut attempts: Vec<StageReport> = Vec::new();
     let mut limited = HashSet::new();
@@ -182,7 +197,7 @@ pub async fn run_relay(
         on_progress(RelayProgress::Handoff { from: from.clone(), to, reason });
 
         let changes = diff_stat(dir, base_commit.as_deref());
-        prompt = Some(build_handoff_prompt(&spec.task, last, &changes, &spec.checks, &spec.accept));
+        prompt = Some(build_handoff_prompt(&spec.task, last, &changes, &spec.checks, &spec.accept, &redactor));
         handoff_from = Some(from);
         current = next;
     }
@@ -283,6 +298,7 @@ mod tests {
             " calc.sh | 2 +-",
             &["./test.sh".into()],
             &["has a README".into()],
+            &Redactor::new(),
         );
         assert!(p.starts_with("Fix add\n"));
         assert!(p.contains("Attempt 1 by codex did not pass"));
@@ -293,6 +309,32 @@ mod tests {
         assert!(p.contains("- `./test.sh` exits 0"));
         assert!(p.contains("- has a README"));
         assert!(p.contains("Continue from the current state"));
+
+        assert!(!p.contains("[REDACTED:"), "nothing to redact, so no note");
+    }
+
+    #[test]
+    fn brief_removes_secrets_before_truncating() {
+        // A key block longer than the 40-line evidence tail: truncating first
+        // would cut off the BEGIN line and leave the key body unmatched.
+        let body: String = (0..60).map(|i| format!("MIIEowIBAAKCAQEA{i:04}xyzxyzxyzxyz\n")).collect();
+        let evidence = format!(
+            "test failed\nusing token ghp_abcdefghijklmnopqrstuvwxyz0123456789\n-----BEGIN RSA PRIVATE KEY-----\n{body}-----END RSA PRIVATE KEY-----\nexpected 5, got -1"
+        );
+        let mut previous = report("codex", Verdict::Fail { reason: "check failed: ./test.sh".into(), evidence });
+        previous.agent_response = "I set DB_PASSWORD=hunter2hunter2 in config.".into();
+        let red = Redactor::new().with_known_values(["plain-secret-value".to_string()]);
+        let p = build_handoff_prompt("Fix add", &previous, " plain-secret-value | 1 +", &[], &[], &red);
+
+        assert!(!p.contains("ghp_abcdefghij"));
+        assert!(!p.contains("MIIEowIBAAKCAQEA"));
+        assert!(!p.contains("hunter2hunter2"));
+        assert!(!p.contains("plain-secret-value"));
+        assert!(p.contains("[REDACTED:github-token]"));
+        assert!(p.contains("[REDACTED:private-key]"));
+        assert!(p.contains("DB_PASSWORD=[REDACTED:DB_PASSWORD]"));
+        assert!(p.contains("expected 5, got -1"), "the useful part of the evidence stays");
+        assert!(p.contains(crate::redact::note()));
     }
 
     // --- end to end with shell providers ---
